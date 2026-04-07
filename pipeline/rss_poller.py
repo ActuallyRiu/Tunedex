@@ -61,150 +61,108 @@ MUSIC_SUBREDDITS = [
 ]
 
 
-def extract_artists_from_text(text: str, known_artists: list[dict]) -> list[dict]:
-    """
-    Match known artist names in article text.
-    Returns list of {artist_id, artist_name, mention_count}.
-    Simple exact-match— Claude API used for disambiguation when needed.
-    """
+def extract_artists_from_text(text, known_artists):
     matches = []
     text_lower = text.lower()
     for artist in known_artists:
         name = artist["name"].lower()
         count = len(re.findall(r'\b' + re.escape(name) + r'\b', text_lower))
         if count > 0:
-            matches.append({
-                "artist_id":    artist["id"],
-                "artist_name":  artist["name"],
-                "mention_count": count,
-            })
+            matches.append({"artist_id": artist["id"], "artist_name": artist["name"], "mention_count": count})
     return matches
 
 
-def score_text_afinn(text: str) -> float:
-    """Score text with AFINN. Returns avg per-word score (-5 to +5)."""
-    if not text or len(text.strip()) < 10:
-        return 0.0
+def score_text_afinn(text):
+    if not text or len(text.strip()) < 10: return 0.0
     score = afinn.score(text)
     words = len([w for w in text.split() if w.strip()])
-    if words == 0:
-        return 0.0
-    return round(score / words, 3)
+    return round(score / words, 3) if words else 0.0
 
 
-def upsert_press_signal(
-    db: Client,
-    artist_id: str,
-    tier: int,
-    article_afinn.float,
-    captured_at: datetime,
-) -> None:
-    today_start = captured_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    existing = (
-        db.table("artist_press_signals")
-          .select("*")
-          .eq("artist_id", artist_id)
-          .gte("captured_at", today_start.isoformat())
-          .order("captured_at", desc=True)
-          .limit(1)
-          .execute()
-    ).data
-    if existing:
-        row = existing[0]
-        old_count = row["article_count_7d"] or 0
-        old_avg   = float(row["press_afinn_avg"] or 0)
-        new_count = old_count + 1
-        new_avg   = round((old_avg * old_count + article_afinn) / new_count, 3)
-        update = {"article_count_7d": new_count, "press_afinn_avg": new_avg}
-        if tier == 1: update["tier1_count_7d"] = (row.get("tier1_count_7d") or 0) + 1
-        elif tier == 2: update["tier2_count_7d"] = (row.get("tier2_count_7d") or 0) + 1
-        else: update["tier3_count_7d"] = (row.get("tier3_count_7d") or 0) + 1
-        db.table("artist_press_signals").update(update).eq("id", row["id"]).execute()
+def upsert_press_signal(db, artist_id, tier, afinn_score, now):
+    ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ex = (db.table("artist_press_signals").select("*").eq("artist_id", artist_id).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
+    if ex:
+        row = ex[0]; n = (row.get("article_count_7d") or 0) + 1
+        avg = round((float(row.get("press_afinn_avg") or 0) * (n - 1) + afinn) / n, 3)
+        u = {"article_count_7d": n, "press_afinn_avg": avg}
+        if tier == 1: u["tier1_count_7d"] = (row.get("tier1_count_7d") or 0) + 1
+        elif tier == 2: u["tier2_count_7d"] = (row.get("tier2_count_7d") or 0) + 1
+        else: u["tier3_count_7d"] = (row.get("tier3_count_7d") or 0) + 1
+        db.table("artist_press_signals").update(u).eq("id", row["id"]).execute()
     else:
-        db.table("artist_press_signals").insert({
-            "artist_id": artist_id, "captured_at": captured_at.isoformat(),
-            "article_count_7d": 1,
-            "tier1_count_7d": 1 if tier == 1 else 0,
-            "tier2_count_7d": 1 if tier == 2 else 0,
-            "tier3_count_7d": 1 if tier == 3 else 0,
-            "press_afinn_avg": article_afinn,
-        }).execute()
+        db.table("artist_press_signals").insert({"artist_id": artist_id, "captured_at": now.isoformat(), "article_count_7d": 1, "tier1_count_7d": 1 if tier == 1 else 0, "tier2_count_7d": 1 if tier == 2 else 0, "tier3_count_7d": 1 if tier == 3 else 0, "press_afinn_avg": afinn_score}).execute()
 
 
-def aggregate_sentiment(db: Client, artist_id: str, new_afinn: float, source: str, captured_at: datetime) -> None:
-    today_start = captured_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    existing = (db.table("artist_sentiment_signals").select("*").eq("artist_id", artist_id).gte("captured_at", today_start.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
-    if existing:
-        row = existing[0]
-        old_n = row.get("afinn_sample_size") or 0
-        old_avg = float(row.get("afinn_avg") or 0)
-        new_n = old_n + 1
-        new_avg = round((old_avg * old_n + new_afinn) / new_n, 3)
-        mention_count = (row.get("mention_count_7d") or 0) + 1
-        is_controversy = (new_avg < 0 and mention_count >= CONTROVERSY_THRESHOLD)
-        db.table("artist_sentiment_signals").update({"afinn_avg": new_avg, "afinn_sample_size": new_n, "mention_count_7d": mention_count, "is_controversy": is_controversy}).eq("id", row["id"]).execute()
+def aggregate_sentiment(db, artist_id, new_afinn, source, now):
+    ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ex = (db.table("artist_sentiment_signals").select("*").eq("artist_id", artist_id).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
+    if ex:
+        row = ex[0]; on = row.get("afinn_sample_size") or 0; oa = float(row.get("afinn_avg") or 0)
+        nn = on + 1; na = round((oa * on + new_afinn) / nn, 3)
+        mc = (row.get("mention_count_7d") or 0) + 1; ic = (na < 0 and mc >= 50)
+        db.table("artist_sentiment_signals").update({"afinn_avg": na, "afinn_sample_size": nn, "mention_count_7d": mc, "is_controversy": ic}).eq("id", row["id"]).execute()
     else:
-        db.table("artist_sentiment_signals").insert({"artist_id": artist_id, "captured_at": captured_at.isoformat(), "afinn_avg": new_afinn, "afinn_sample_size": 1, "mention_count_7d": 1, "is_controversy": new_afinn < 0}).execute()
+        db.table("artist_sentiment_signals").insert({"artist_id": artist_id, "captured_at": now.isoformat(), "afinn_avg": new_afinn, "afinn_sample_size": 1, "mention_count_7d": 1, "is_controversy": new_afinn < 0}).execute()
 
 
-def process_article(db: Client, article: dict, known_artists: list[dict], source_domain: str) -> None:
+def process_article(db, article, known_artists, source_domain):
+    from datetime import datetime, timezone
     text = f"{article.get('title', '')} {article.get('summary', '')}"
-    afinn_score = score_text_afinn(text)
-    tier = PUBLICATION_TIERS.get(source_domain, 3)
-    now = datetime.now(timezone.utc)
-    for mention in extract_artists_from_text(text, known_artists):
-        aid = mention["artist_id"]
-        upsert_press_signal(db, aid, tier, afinn_score, now)
-        aggregate_sentiment(db, aid, afinn.score, "press", now)
-        db.table("artist_mentions").insert({"artist_id": aid, "source": source_domain, "mention_type": "article", "afinn_score": afinn.score, "mention_count": mention["mention_count"], "captured_at": now.isoformat()}).execute()
+    as = score_text_afinn(text); tier = PUBLICATION_TIERS.get(source_domain, 3); now = datetime.now(timezone.utc)
+    for m in extract_artists_from_text(text, known_artists):
+        aid = m["artist_id"]
+        upsert_press_signal(db, aid, tier, as, now)
+        aggregate_sentiment(db, aid, as, "press", now)
+        db.table("artist_mentions").insert({"artist_id": aid, "source": source_domain, "mention_type": "article", "afinn_score": as, "mention_count": m["mention_count"], "captured_at": now.isoformat()}).execute()
 
 
-def poll_reddit(db: Client, known_artists: list[dict]) -> None:
+def poll_reddit(db, known_artists):
+    import praw, logging
+    log = logging.getLogger("rss_poller_v2")
     if not REDDIT_CLIENT_ID: return
     try:
-        import praw
-        reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID, client_secret=REDDIT_CLIENT_SECRET, user_agent=REDDIT_USER_AGENT)
+        from datetime import datetime, timezone
+        reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID, client_secret=REDDITECLIENT_SECRET, user_agent=REDDIT_USER_AGENT)
         now = datetime.now(timezone.utc)
-        for subreddit_name in MUSIC_SUBREDDITS:
-            for post in reddit.subreddit(subreddit_name).new(limit=25):
-                text = f"{post.title} {post.selftext}"
-                afinn.score = score_text_afinn(text)
-                for m in extract_artists_from_text(text, known_artists):
-                    aggregate_sentiment(db, m["artist_id"], afinn_score, "reddit", now)
-    except Exception as e:
-        log.warning(f"Reddit polling error: {e}")
+        for s in MUSIC_SUBREDDITS:
+            for p in reddit.subreddit(s).new(limit=25):
+                t = p.title + " " + p.selftext
+                for m in extract_artists_from_text(t, known_artists):
+                    aggregate_sentiment(db, m["artist_id"], score_text_afinn(t), "reddit", now)
+    except Exception as e: log.warning(f"Reddit: {e}")
 
 
-def poll_wikipedia_edits(db: Client, known_artists: list[dict]) -> None:
-    stream_url = "https://stream.wikimedia.org/v2/stream/recentchange"
-    now = datetime.now(timezone.utc)
-    deadline = time.time() + 10
+def poll_wikipedia_edits(db, known_artists):
+    import httpx, json, time, logging
+    from datetime import datetime, timezone
+    log = logging.getLogger("rss_poller_v2")
+    now = datetime.now(timezone.utc); dl = time.time() + 10
     try:
-        with httpx.stream("GET", stream_url, timeout=15) as r:
-            for line in r.iter_lines():
-                if time.time() > deadline: break
-                if not line.startswith("data:"): continue
-                try: event = json.loads(line[5:])
+        with httpx.stream("GET", "https://stream.wikimedia.org/v2/stream/recentchange", timeout=15) as r:
+            for l in r.iter_lines():
+                if time.time() > dl: break
+                if not l.startswith("data:"): continue
+                try: e = json.loads(l[5:])
                 except: continue
-                if event.get("wiki") != "enwiki": continue
-                title = event.get("title", "")
-                for artist in known_artists:
-                    if artist["name"].lower() in title.lower():
-                        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                        existing = (db.table("artist_brand_signals").select("id,wikipedia_edits_7d").eq("artist_id", artist["id"]).gte("captured_at", today_start.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
-                        if existing: db.table("artist_brand_signals").update({"wikipedia_edits_7d": (existing[0].get("wikipedia_edits_7d") or 0) + 1, "wikipedia_article_exists": True}).eq("id", existing[0]["id"]).execute()
-                        else: db.table("artist_brand_signals").insert({"artist_id": artist["id"], "captured_at": now.isoformat(), "wikipedia_edits_7d": 1, "wikipedia_article_exists": True}).execute()
+                if e.get("wiki") != "enwiki": continue
+                tit = e.get("title", "")
+                for a in known_artists:
+                    if a["name"].lower() in tit.lower():
+                        ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                        ex = (db.table("artist_brand_signals").select("id,wikipedia_edits_7d").eq("artist_id", a["id"]).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
+                        if ex: db.table("artist_brand_signals").update({"wikipedia_edits_7d": (ex[0].get("wikipedia_edits_7d") or 0) + 1, "wikipedia_article_exists": True}).eq("id", ex[0]["id"]).execute()
+                        else: db.table("artist_brand_signals").insert({"artist_id": a["id"], "captured_at": now.isoformat(), "wikipedia_edits_7d": 1, "wikipedia_article_exists": True}).execute()
                         break
-    except Exception as e:
-        log.warning(f"Wikipedia stream error: {e}")
+    except Exception as e: log.warning(f"Wikipedia: {e}")
 
 
-def run_extended_pipeline() -> None:
+def run_extended_pipeline():
     db = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    known_artists = (db.table("artists").select("id, name").execute()).data
-    log.info(f"Extended pipeline running. {len(known_artists)} artists in index.")
-    poll_reddit(db, known_artists)
-    poll_wikipedia_edits(db, known_artists)
+    known = (db.table("artists").select("id,name").execute()).data
+    log.info(f"Extended pipeline: {len(known)} artists")
+    poll_reddit(db, known)
+    poll_wikipedia_edits(db, known)
     log.info("Extended pipeline complete.")
 
 
