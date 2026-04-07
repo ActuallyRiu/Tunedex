@@ -123,7 +123,7 @@ def poll_reddit(db, known_artists):
     if not REDDIT_CLIENT_ID: return
     try:
         from datetime import datetime, timezone
-        reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID, client_secret=REDDITECLIENT_SECRET, user_agent=REDDIT_USER_AGENT)
+        reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID, client_secret=REDDITCLIENT_SECRET, user_agent=REDDIT_USER_AGENT)
         now = datetime.now(timezone.utc)
         for s in MUSIC_SUBREDDITS:
             for p in reddit.subreddit(s).new(limit=25):
