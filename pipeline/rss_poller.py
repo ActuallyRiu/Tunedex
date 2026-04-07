@@ -109,12 +109,12 @@ def aggregate_sentiment(db, artist_id, new_afinn, source, now):
 def process_article(db, article, known_artists, source_domain):
     from datetime import datetime, timezone
     text = f"{article.get('title', '')} {article.get('summary', '')}"
-    as = score_text_afinn(text); tier = PUBLICATION_TIERS.get(source_domain, 3); now = datetime.now(timezone.utc)
+    afinn_score = score_text_afinn(text); tier = PUBLICATION_TIERS.get(source_domain, 3); now = datetime.now(timezone.utc)
     for m in extract_artists_from_text(text, known_artists):
         aid = m["artist_id"]
-        upsert_press_signal(db, aid, tier, as, now)
-        aggregate_sentiment(db, aid, as, "press", now)
-        db.table("artist_mentions").insert({"artist_id": aid, "source": source_domain, "mention_type": "article", "afinn_score": as, "mention_count": m["mention_count"], "captured_at": now.isoformat()}).execute()
+        upsert_press_signal(db, aid, tier, afinn_score, now)
+        aggregate_sentiment(db, aid, afinn_score, "press", now)
+        db.table("artist_mentions").insert({"artist_id": aid, "source": source_domain, "mention_type": "article", "afinn_score": afinn_score, "mention_count": m["mention_count"], "captured_at": now.isoformat()}).execute()
 
 
 def poll_reddit(db, known_artists):
