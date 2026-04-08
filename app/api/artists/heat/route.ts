@@ -5,9 +5,9 @@
  * Returns artist heat scores for the frontend feed.
  *
  * Endpoints:
- *   GET /api/artists/heat              — leaderboard (top N by heat score)
- *   GET /api/artists/heat?id=<uuid>    — single artist full breakdown
- *   GET /api/artists/heat?stage=emerging — filter by career stage
+ *   GET /api/artists/heat              â leaderboard (top N by heat score)
+ *   GET /api/artists/heat?id=<uuid>    â single artist full breakdown
+ *   GET /api/artists/heat?stage=emerging â filter by career stage
  *
  * Uses Supabase anon key (public read via RLS).
  * Cached at edge for 60 seconds.
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   if (artistId) {
     if (!/^[0-9a-f-]{36}$/.test(artistId)) return NextResponse.json({error:"Invalid ID"},{status:400});
     const {data:artists,error} = await db.from("artist_latest_signals").select("*").eq("id",artistId).limit(1);
-    if (error) return NextResponse.json({error:"DB error:},{status:500});
+    if (error) return NextResponse.json({error:"DB error"},{status:500});
     if (!artists?.length) return NextResponse.json({error:"Not found"},{status:404});
     const {data:history} = await db.from("artist_heat_history").select("scored_at,final_score,career_stage,streaming_score,brand_score,sentiment_score,radio_score,press_score,bonus_pts,brand_multiplier,heat_label,controversy_active").eq("artist_id",artistId).gte("scored_at",new Date(Date.now()-604800000).toISOString()).order("scored_at",{ascending:true});
     const row = artists[0];
