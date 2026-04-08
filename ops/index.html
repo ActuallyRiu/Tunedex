@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tunedex Ops">
+<link rel="manifest" href="manifest.json">
+<title>Tunedex Ops</title>
+<style>
+:root{--bg:#0a0a0a;--sf:#141414;--br:rgba(255,255,255,.08);--brm:rgba(255,255,255,.14);--tx:#f0f0f0;--mu:#888;--di:#555;--gn:#22c55e;--yw:#eab308;--rd:#ef4444;--bl:#3b82f6;--og:#f97316;--st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+.app{display:flex;flex-direction:column;min-height:100%;padding-top:var(--st)}
+header{padding:16px 20px 12px;border-bottom:.5px solid var(--br);display:flex;align-items:center;justify-content:space-between;background:var(--bg);position:sticky;top:0;z-index:10}
+.hl{display:flex;align-items:center;gap:10px}
+.logo{font-size:17px;font-weight:600;letter-spacing:-.3px}
+.logo span{color:var(--gn)}
+.hb{font-size:11px;background:rgba(34,197,94,.12);color:var(--gn);padding:3px 8px;border-radius:20px;font-weight:500}
+.rb{width:32px;height:32px;border-radius:50%;background:var(--sf);border:.5px solid var(--br);color:var(--mu);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.rb:active{transform:scale(.92)}
+.rb.sp{animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+main{flex:1;padding:16px 16px calc(16px + var(--sb));overflow-y:auto}
+.sec{margin-bottom:20px}
+.sl{font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--di);margin-bottom:10px;padding:0 4px}
+.card{background:var(--sf);border:.5px solid var(--br);border-radius:16px;padding:14px 16px;margin-bottom:10px}
+.card:last-child{margin-bottom:0}
+.sr{display:flex;align-items:center;gap:12px}
+.si{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;background:rgba(0,0,0,.3)}
+.sn{font-size:14px;font-weight:500;color:var(--tx)}
+.ss{font-size:12px;color:var(--mu);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;padding:4px 10px;border-radius:20px;flex-shrink:0}
+.so{background:rgba(34,197,94,.12);color:var(--gn)}
+.se{background:rgba(239,68,68,.12);color:var(--rd)}
+.sw{background:rgba(234,179,8,.12);color:var(--yw)}
+.sd{background:rgba(255,255,255,.06);color:var(--di)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.dv{height:.5px;background:var(--br);margin:12px 0}
+.sg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.si2{background:rgba(255,255,255,.03);border-radius:10px;padding:10px 12px}
+.slb{font-size:11px;color:var(--di);margin-bottom:4px}
+.sv{font-size:20px;font-weight:600;color:var(--tx)}
+.cs{margin-top:12px}
+.cl{display:flex;justify-content:space-between;font-size:12px;color:var(--mu);margin-bottom:6px}
+.cb{height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+.cf{height:100%;border-radius:2px;background:var(--gn);transition:width 1s linear}
+.lr{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:.5px solid var(--br)}
+.lr:last-child{border-bottom:none;padding-bottom:0}
+.lrk{font-size:11px;color:var(--di);width:16px;flex-shrink:0;text-align:right}
+.lrn{flex:1;font-size:14px;color:var(--tx);font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrs{font-size:11px;color:var(--mu)}
+.lrl{font-size:11px;font-weight:500;padding:2px 7px;border-radius:10px;flex-shrink:0}
+.lrx{background:rgba(249,115,22,.15);color:var(--og)}
+.lrr{background:rgba(234,179,8,.12);color:var(--yw)}
+.lrt{background:rgba(59,130,246,.12);color:var(--bl)}
+.lrsc{font-size:14px;font-weight:600;color:var(--tx);width:32px;text-align:right;flex-shrink:0}
+.log{display:flex;gap:8px;padding:7px 0;border-bottom:.5px solid var(--br)}
+.log:last-child{border-bottom:none}
+.lt{font-size:11px;color:var(--di);flex-shrink:0;font-variant-numeric:tabular-nums;padding-top:1px}
+.lsv{font-size:11px;color:var(--mu);flex-shrink:0;width:56px;padding-top:1px}
+.lm{font-size:13px;flex:1}
+.lok{color:var(--tx)}
+.lwn{color:var(--yw)}
+.ler{color:var(--rd)}
+.fr{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:2px}
+.fr::-webkit-scrollbar{display:none}
+.chip{font-size:12px;padding:5px 12px;border-radius:20px;border:.5px solid var(--br);color:var(--mu);background:transparent;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.chip.act{background:rgba(255,255,255,.08);color:var(--tx);border-color:var(--brm)}
+.empty{text-align:center;padding:24px 0;font-size:13px;color:var(--di)}
+.lg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.lc{background:var(--sf);border:.5px solid var(--br);border-radius:12px;padding:12px 14px;text-decoration:none;display:flex;flex-direction:column;gap:4px}
+.lc:active{border-color:var(--brm)}
+.li{font-size:18px}
+.ln{font-size:13px;font-weight:500;color:var(--tx)}
+.lu{font-size:11px;color:var(--di)}
+.ts{text-align:center;font-size:11px;color:var(--di);padding:8px 0 4px}
+@media(min-width:600px){main{max-width:560px;margin:0 auto}}
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+<div class="hl">
+<div class="logo">Tunedex <span>Ops</span></div>
+<div class="hb" id="ob">checking…</div>
+</div>
+<button class="rb" id="rbtn" onclick="refresh()">↻</button>
+</header>
+<main>
+<div class="sec">
+<div class="sl">Services</div>
+<div class="card">
+<div class="sr"><div class="si">🌐</div><div style="flex:1;min-width:0"><div class="sn">Frontend</div><div class="ss">tunedex.vercel.app</div></div><div class="sb sd" id="vb"><span class="dot"></span><span id="vs">—</span></div></div>
+<div class="dv"></div><div style="font-size:12px;color:var(--mu)" id="vd">checking…</div>
+</div>
+<div class="card">
+<div class="sr"><div class="si">📡</div><div style="flex:1;min-width:0"><div class="sn">RSS Poller</div><div class="ss">Railway · every 90s</div></div><div class="sb sd" id="rb2"><span class="dot"></span><span id="rs">—</span></div></div>
+</div>
+<div class="card">
+<div class="sr"><div class="si">🔥</div><div style="flex:1;min-width:0"><div class="sn">Heat Scorer</div><div class="ss">Railway · cron */15 min</div></div><div class="sb sd" id="scb"><span class="dot"></span><span id="scs">—</span></div></div>
+<div class="cs"><div class="cl"><span>next run</span><span id="cc">—</span></div><div class="cb"><div class="cf" id="cf" style="width:0%"></div></div></div>
+</div>
+<div class="card">
+<div class="sr"><div class="si">🗄️</div><div style="flex:1;min-width:0"><div class="sn">Database</div><div class="ss">Supabase · Postgres</div></div><div class="sb so"><span class="dot"></span>connected</div></div>
+<div class="dv"></div>
+<div class="sg">
+<div class="si2"><div class="slb">Artists</div><div class="sv" id="da">—</div></div>
+<div class="si2"><div class="slb">Heat records</div><div class="sv" id="dh">—</div></div>
+<div class="si2"><div class="slb">Press signals</div><div class="sv" id="dp">—</div></div>
+<div class="si2"><div class="slb">Sentiment</div><div class="sv" id="ds">—</div></div>
+</div>
+</div>
+</div>
+<div class="sec">
+<div class="sl">Heat leaderboard</div>
+<div class="card"><div id="lb"><div class="empty">loading…</div></div></div>
+</div>
+<div class="sec">
+<div class="sl">Activity log</div>
+<div class="fr">
+<button class="chip act" onclick="sf('all',this)">All</button>
+<button class="chip" onclick="sf('error',this)">Errors</button>
+<button class="chip" onclick="sf('scorer',this)">Scorer</button>
+<button class="chip" onclick="sf('poller',this)">Poller</button>
+<button class="chip" onclick="sf('api',this)">API</button>
+</div>
+<div class="card"><div id="ll"><div class="empty">loading…</div></div></div>
+</div>
+<div class="sec">
+<div class="sl">Quick links</div>
+<div class="lg">
+<a class="lc" href="https://vercel.com/actuallyrius-projects/tunedex/deployments"><div class="li">▲</div><div class="ln">Vercel</div><div class="lu">Deployments</div></a>
+<a class="lc" href="https://railway.com/project/68ab2e28-e785-4d6c-9a80-34f5d17f349c"><div class="li">🚂</div><div class="ln">Railway</div><div class="lu">tunedex project</div></a>
+<a class="lc" href="https://supabase.com/dashboard/project/lwmzrccvwxbdrrpzojeg"><div class="li">⚡</div><div class="ln">Supabase</div><div class="lu">Tupado Aggregator</div></a>
+<a class="lc" href="https://tunedex.vercel.app"><div class="li">🎵</div><div class="ln">Tunedex</div><div class="lu">Live site</div></a>
+</div>
+</div>
+<div class="ts" id="lu2">—</div>
+</main>
+</div>
+<script>
+const SU='https://lwmzrccvwxbdrrpzojeg.supabase.co',AK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3bXpyY2N2d3hiZHJycHpvamVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTk4NDcsImV4cCI6MjA5MDQzNTg0N30.frFP2f0XrwgOrHAgdcSUwn3HBE2wYnFdhQLiU-7YJ4Y';
+let logs=[],lf='all';
+function ts(){return new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+function addLog(svc,msg,t='ok'){logs.unshift({time:ts(),svc,msg,t});if(logs.length>60)logs.pop();rl()}
+function rl(){
+const f=lf==='all'?logs:logs.filter(l=>lf==='error'?(l.t==='err'||l.t==='warn'):l.svc.toLowerCase().includes(lf));
+const el=document.getElementById('ll');
+if(!f.length){el.innerHTML='<div class="empty">no entries</div>';return}
+el.innerHTML=f.slice(0,20).map(l=>'<div class="log"><span class="lt">'+l.time+'</span><span class="lsv">'+l.svc+'</span><span class="lm l'+l.t+'">'+l.msg+'</span></div>').join('')}
+function sf(f,btn){lf=f;document.querySelectorAll('.chip').forEach(c=>c.classList.remove('act'));btn.classList.add('act');rl()}
+function setBadge(id,state){
+const el=document.getElementById(id);const ok=state==='SUCCESS'||state==='ACTIVE'||state==='live'||state==='ready';
+const err=state==='CRASHED'||state==='FAILED'||state==='error';
+el.className='sb '+(ok?'so':err?'se':'sw');
+el.innerHTML='<span class="dot"></span><span>'+state+'</span>'}
+function updateOverall(){
+const has=s=>document.getElementById(s)?.classList.contains;
+const e=['vb','rb2','scb'].some(b=>document.getElementById(b)?.classList.contains('se'));
+const w=['vb','rb2','scb'].some(b=>document.getElementById(b)?.classList.contains('sw'));
+const ob=document.getElementById('ob');
+if(e){ob.textContent='issues';ob.style.cssText='background:rgba(239,68,68,.12);color:var(--rd)'}
+else if(w){ob.textContent='degraded';ob.style.cssText='background:rgba(234,179,8,.12);color:var(--yw)'}
+else{ob.textContent='all good';ob.style.cssText='background:rgba(34,197,94,.12);color:var(--gn)'}}
+function updateCron(){
+const n=new Date(),s=(n.getMinutes()%15)*60+n.getSeconds(),t=900,p=Math.round(s/t*100),r=t-s,m=Math.floor(r/60),sc=r%60;
+document.getElementById('cf').style.width=p+'%';
+document.getElementById('cc').textContent=m+'m '+sc+'s'}
+async function checkFrontend(){
+try{const r=await fetch('https://tunedex.vercel.app/',{method:'HEAD',cache:'no-store'});
+setBadge('vb',r.ok?'live':r.status.toString());
+document.getElementById('vd').textContent=r.ok?'HTTP '+r.status+' · tunedex.vercel.app':'HTTP '+r.status+' error';
+addLog('vercel',r.ok?'frontend OK':'HTTP '+r.status,r.ok?'ok':'err')}catch(e){setBadge('vb','error');addLog('vercel',e.message,'err')}}
+async function checkRailway(){
+try{const r=await fetch('https://backboard.railway.com/graphql/internal',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'{ rss:service(id:"959623b9-bc83-4943-b160-326a43b5845a"){deployments(first:1){edges{node{status}}}} scorer:service(id:"bc1031e9-436d-4e05-95f2-0e7713e649cd"){deployments(first:1){edges{node{status}}}}}' })});
+const d=await r.json();
+const rs=d.data?.rss?.deployments?.edges?.[0]?.node?.status;
+const ss=d.data?.scorer?.deployments?.edges?.[0]?.node?.status;
+setBadge('rb2',rs||'unknown');setBadge('scb',ss||'unknown');
+addLog('railway','rss='+rs+' scorer='+ss,(rs==='SUCCESS'||rs==='ACTIVE')?'ok':'warn');updateOverall()}
+catch(e){setBadge('rb2','offline');setBadge('scb','offline');addLog('railway','API unreachable','warn')}}
+async function checkDB(){
+const t=[['da','artists'],['dh','artist_heat_history'],['dp','artist_press_signals'],['ds','artist_sentiment_signals']];
+for(const[id,tbl]of t){try{const r=await fetch(SU+'/rest/v1/'+tbl+'?select=count',{headers:{'apikey':AK,'Authorization':'Bearer '+AK,'Accept':'application/vnd.pgrst.object+json','Prefer':'count=exact','Range':'0-0'}});
+const c=r.headers.get('content-range')?.split('/')[1]??'?';document.getElementById(id).textContent=c}catch(e){}}}
+async function checkLB(){
+try{const r=await fetch('https://tunedex.vercel.app/api/artists/heat?limit=10',{cache:'no-store'});
+const d=await r.json();const a=d.leaderboard||d.artists||d.data||(Array.isArray(d)?d:null);
+const el=document.getElementById('lb');
+if(!a?.length){el.innerHTML='<div class="empty">no artists scored yet — seed artists first</div>';addLog('api','leaderboard empty','warn')}
+else{const lc={'Exploding':'lrx','Rising':'lrr','Steady':'lrt','Cold':'lrt'};
+el.innerHTML=a.slice(0,8).map((x,i)=>'<div class="lr"><span class="lrk">'+(i+1)+'</span><span class="lrn">'+(x.artist_name||x.name||'—')+'</span><span class="lrs">'+(x.career_stage||'')+'</span><span class="lrl '+(lc[x.heat_label]||'lrt')+'">'+(x.heat_label||'—')+'</span><span class="lrsc">'+(x.final_score!=null?Math.round(x.final_score):'—')+'</span></div>').join('');
+addLog('api',a.length+' artists scored','ok')}}catch(e){document.getElementById('lb').innerHTML='<div class="empty">API unreachable</div>';addLog('api','error: '+e.message,'err')}}
+async function refresh(){
+const b=document.getElementById('rbtn');b.classList.add('sp');
+addLog('system','refresh started','ok');
+await Promise.all([checkFrontend(),checkRailway(),checkDB(),checkLB()]);
+updateOverall();b.classList.remove('sp');
+document.getElementById('lu2').textContent='updated '+ts()}
+refresh();setInterval(updateCron,1000);setInterval(refresh,120000);updateCron();
+</script>
+</body>
+</html>
