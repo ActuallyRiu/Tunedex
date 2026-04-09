@@ -1,41 +1,26 @@
 """
-tunedex/heat_scorer.py
+tunedex/heat_scorer.py  -- v2 fixed
 
-Core scoring worker. Runs as a Railway cron job every 15 minutes.
-Reads latest signals from Supabase, applies career-stage-adjusted
-weights, writes heat scores back.
-
-Environment variables required:
-  SUPABASE_URL
-  SUPABASE_SERVICE_KEY
-  AFINN_CONTROTERSY_THRESHOLD  (default: 50)
-  SCORE_BATCH_SIZE             (default: 50)
+Key fixes:
+1. Baseline scoring from monthly_listeners when no signal data exists
+2. Only writes confirmed real columns to artists table
+3. Full error logging per artist
 """
 
 import os
 import math
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
-from dataclasses import dataclass, field
 
 from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("heat_scorer")
 
-
 SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-CONTROVERSY_MENTION_THRESHOLD = int(os.environ.get("AFINN_CONTROVERSY_THRESHOLD", 50))
-BATCH_SIZE = int(os.environ.get("SCORE_BATCH_SIZE", 50))
-
-STAGE_THRESHOLDS = {
-    "emerging":    (0,       10_000),
-    "rising":      (10_000,  100_000),
-    "breaking":    (100_000, 1_000_000),
-    "established": (1_000_000, None),
-}
+BATCH_SIZE           = int(os.environ.get("SCORE_BATCH_SIZE", 50))
 
 STAGE_WEIGHTS = {
     "emerging":    {"streaming": 20, "brand": 14, "sentiment": 24, "radio": 22, "press": 16},
@@ -44,295 +29,184 @@ STAGE_WEIGHTS = {
     "established": {"streaming": 34, "brand": 26, "sentiment": 18, "radio": 10, "press":  8},
 }
 
-BONUS_PTS = {
-    "cross_signal_spike": 4.0,
-    "milestone_event":    4.0,
-    "viral_moment":       2.0,
-}
-
 HEAT_LABELS = [
-    (85, "Breakout"),
+    (85, "Exploding"),
     (70, "Rising"),
-    (55, "Gaining traction"),
+    (55, "Gaining"),
     (40, "Emerging"),
     (0,  "Early signals"),
 ]
 
-STAGE_TRANSITION_BUFFER = 3
-
-
-@dataclass
-class StreamingSignal:
-    spotify_listeners:   int   = 0
-    spotify_streams_7d:  int   = 0
-    youtube_views_7d:    int   = 0
-    audiomack_plays_7d:  int   = 0
-    listener_delta_7d:   float = 0.0
-    stream_delta_7d:     float = 0.0
-    editorial_playlists: int   = 0
-    algo_playlists:      int   = 0
-    soundcharts_rank:    Optional[int] = None
-    chart_delta_7d:      int   = 0
-
-@dataclass
-class SentimentSignal:
-    afinn_avg:           float = 0.0
-    afinna_sample_size:  int   = 0
-    mention_count_7d:    int   = 0
-    valence_slope_7d:    float = 0.0
-    is_controversy:      bool  = False
-
-@dataclass
-class RadioSignal:
-    indie_spins_7d:         int = 0
-    indie_stations_7d:      int = 0
-    indie_stations_new_7d:  int = 0
-    indie_stations_lost_7d: int = 0
-    commercial_spins_7d:    int = 0
-    commercial_stations_7d: int = 0
-    format_count_7d:        int = 0
-
-@dataclass
-class BrandSignal:
-    followers_total:              int   = 0
-    follower_growth_30d:          float = 0.0
-    active_platforms:             int   = 0
-    engagement_rate:              float = 0.0
-    tastemaker_recognition_score: float = 0.0
-    genre_cooccurrence_score:     float = 0.0
-    wikipedia_article_exists:     bool  = False
-    wikipedia_edits_7d:           int   = 0
-    wikipedia_inbound_links:      int   = 0
-    sync_weight_90d:              float = 0.0
-    brand_partnerships_90d:       int   = 0
-    media_appearances_90d:        int   = 0
-
-@dataclass
-class PressSignal:
-    article_count_7d: int   = 0
-    tier1_count_7d:   int   = 0
-    tier2_count_7d:   int   = 0
-    tier3_count_7d:   int   = 0
-    press_afinn_avg:  float = 0.0
-
-@dataclass
-class ArtistRecord:
-    id:                        str
-    name:                      str
-    monthly_listeners:         int   = 0
-    career_stage:              str   = "emerging"
-    stage_transition_buffer:   int   = 0
-    controversy_flag:          bool  = False
-    streaming: StreamingSignal = field(default_factory=StreamingSignal)
-    sentiment: SentimentSignal = field(default_factory=SentimentSignal)
-    radio:     RadioSignal     = field(default_factory=RadioSignal)
-    brand:     BrandSignal     = field(default_factory=BrandSignal)
-    press:     PressSignal     = field(default_factory=PressSignal)
-    bonus_pts: float           = 0.0
-
-
-def log_norm(value: int, ceiling: int = 1_000_000) -> float:
-    if value <= 0: return 0.0
-    return min(math.log10(value + 1) / math.log10(ceiling + 1), 1.0)
-
-def clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(Hi, value))
-
-def pct_norm(pct: float, ceiling: float = 200.0) -> float:
-    return clamp(max(pct, 0) / ceiling)
-
-def rank_norm(rank: Optional[int], floor: int = 1, ceiling: int = 10000) -> float:
-    if rank is None: return 0.0
-    return clamp(1 - (rank - floor) / (ceiling - floor))
-
-def slope_norm(slope: float, ceiling: float = 0.5) -> float:
-    return clamp(max(slope, 0) / ceiling)
-
-
-def score_streaming(s: StreamingSignal) -> float:
-    volume = (
-        log_norm(s.spotify_listeners, 10_000_000) * 0.5 +
-        log_norm(s.spotify_streams_7d, 5_000_000) * 0.3 +
-        log_norm(s.youtube_views_7d, 10_000_000) * 0.15 +
-        log_norm(s.audiomack_plays_7d, 1_000_000) * 0.05
-    )
-    momentum = (
-        pct_norm(s.listener_delta_7d, 100) * 0.5 +
-        pct_norm(s.stream_delta_7d, 100) * 0.5
-    )
-    playlists = (
-        log_norm(s.editorial_playlists, 50) * 0.75 +
-        log_norm(s.algo_playlists, 200) * 0.25
-    )
-    chart = rank_norm(s.soundcharts_rank)
-    if s.chart_delta_7d and s.chart_delta_7d > 0:
-        chart = clamp(chart + pct_norm(s.chart_delta_7d, 20) * 0.1)
-    return clamp(volume * 0.35 + momentum * 0.30 + playlists * 0.20 + chart * 0.15)
-
-
-def score_sentiment(s: SentimentSignal) -> float:
-    raw_valence = (s.afinn_avg + 5) / 10
-    valence = clamp(raw_valence)
-    if s.is_controversy or s.afinn_avg < 0:
-        volume = 0.0
-    else:
-        volume = log_norm(s.mention_count_7d, 100_000) * valence
-    trajectory = slope_norm(s.valence_slope_7d)
-    return clamp(valence * 0.58 + volume * 0.25 + trajectory * 0.17)
-
-
-def score_radio(r: RadioSignal) -> float:
-    indie = log_norm(r.indie_spins_7d, 5000)
-    velocity = clamp((r.indie_stations_new_7d - r.indie_stations_lost_7d + 20) / 40)
-    commercial = log_norm(r.commercial_spins_7d, 10000)
-    formats = clamp(r.format_count_7d / 8)
-    return clamp(indie * 0.35 + velocity * 0.25 + commercial * 0.20 + formats * 0.20)
-
-
-def score_brand(b: BrandSignal) -> tuple[float, float]:
-    social = (
-        log_norm(b.followers_total, 50_000_000) * (2/8) +
-        pct_norm(b.follower_growth_30d, 100)   * (3/8) +
-        clamp(b.active_platforms / 3)          * (2/8) +
-        clamp(b.engagement_rate / 0.05)        * (1/8)
-    )
-    wiki_score = (
-        (0.3 if b.wikipedia_article_exists else 0.0) +
-        log_norm(b.wikipedia_edits_7d, 50) * 0.4 +
-        log_norm(b.wikipedia_inbound_links, 500) * 0.3
-    )
-    cultural = (
-        b.tastemaker_recognition_score * (3/7) +
-        b.genre_cooccurrence_score     * (2/7) +
-        clamp(wiki_score)               * (2/7)
-    )
-    commercial = (
-        clamp(b.sync_weight_90d / 4)          * (2/5) +
-        log_norm(b.brand_partnerships_90d, 5) * (2/5) +
-        log_norm(b.media_appearances_90d, 10) * (1/5)
-    )
-    base = clamp(social * 0.40 + cultural * 0.35 + commercial * 0.25)
-    multiplier = round(1.0 + base * 0.10, 3)
-    return base, multiplier
-
-
-def score_press(p: PressSignal, stage: str) -> float:
-    weighted_count = (p.tier1_count_7d * 3 + p.tier2_count_7d * 2 + p.tier3_count_7d)
-    count_norm = log_norm(weighted_count, 30)
-    sentiment_norm = clamp((p.press_afinn_avg + 5) / 10)
-    return clamp(count_norm * 0.60 + sentiment_norm * 0.40)
-
-
-def determine_stage(monthly_listeners: int) -> str:
-    for stage, (lo, hi) in STAGE_THRESHOLDS.items():
-        if hi is None:
-            if monthly_listeners >= lo: return stage
-        elif lo <= monthly_listeners < hi: return stage
-    return "emerging"
-
-
-def resolve_stage_with_smoothing(artist: "ArtistRecord", new_stage: str) -> tuple[str, int]:
-    if new_stage == artist.career_stage: return artist.career_stage, 0
-    new_buffer = artist.stage_transition_buffer + 1
-    if new_buffer >= STAGE_TRANSITION_BUFFER:
-        log.info(f"Stage transition: {artist.name} {artist.career_stage} ‒ {new_stage}")
-        return new_stage, 0
-    return artist.career_stage, new_buffer
-
-
-def detect_bonuses(artist: "ArtistRecord", sub_scores: dict) -> list[dict]:
-    bonuses = []
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(days=14)
-    high_pillars = sum(1 for k, v in sub_scores.items() if v > 0.6)
-    if high_pillars >= 3:
-        bonuses.append({"artist_id": artist.id, "event_type": "cross_signal_spike", "event_pts": BONUS_PTS["cross_signal_spike"], "description": f"{high_pillars} pillars above 0.6", "detected_at": now.isoformat(), "expires_at": expires.isoformat(), "applied": True})
-    if (artist.sentiment.mention_count_7d > CONTROVERSY_MENTION_THRESHOLD * 2
-            and artist.sentiment.afinnn_avg > 1.0
-            and not artist.sentiment.is_controversy):
-        bonuses.append({"artist_id": artist.id, "event_type": "viral_moment", "event_pts": BONUS_PTS["viral_moment"], "description": f"Positive mention surge", "detected_at": now.isoformat(), "expires_at": expires.isoformat(), "applied": True})
-    return bonuses
-
 
 def get_heat_label(score: float) -> str:
     for threshold, label in HEAT_LABELS:
-        if score >= threshold: return label
+        if score >= threshold:
+            return label
     return "Early signals"
 
 
-def calculate_heat_score(artist: ArtistRecord) -> dict:
-    raw_stage = determine_stage(artist.monthly_listeners)
-    stage, buffer = resolve_stage_with_smoothing(artist, raw_stage)
-    weights = STAGE_WEIGHTS[stage]
-    s_stream = score_streaming(artist.streaming)
-    s_sent = score_sentiment(artist.sentiment)
-    s_radio = score_radio(artist.radio)
-    s_brand_n, multiplier = score_brand(artist.brand)
-    s_press = score_press(artist.press, stage)
-    sub_scores = {"streaming": s_stream, "sentiment": s_sent, "radio": s_radio, "brand": s_brand_n, "press": s_press}
-    streaming_pts = s_stream * weights["streaming"]
-    brand_pts = s_brand_n * weights["brand"]
-    sentiment_pts = s_sent * weights["sentiment"]
-    radio_pts = s_radio * weights["radio"]
-    press_pts = s_press * weights["press"]
-    base_score = streaming_pts + brand_pts + sentiment_pts + radio_pts + press_pts
-    bonus_events = detect_bonuses(artist, sub_scores)
-    bonus_pts = min(sum(b["event_pts"] for b in bonus_events), 4.0)
-    base_score += bonus_pts
-    controversy_active = artist.sentiment.is_controversy
-    multiplier_suppressed = controversy_active
-    if multiplier_suppressed: multiplier = 1.000
-    final_score = round(min(base_score * multiplier, 110.0), 2)
-    return {"artist_id": artist.id, "career_stage": stage, "stage_buffer": buffer, "streaming_score": round(streaming_pts, 2), "brand_score": round(brand_pts, 2), "sentiment_score": round(sentiment_pts, 2), "radio_score": round(radio_pts, 2), "press_score": round(press_pts, 2), "bonus_pts": bonus_pts, "base_score": round(base_score, 2), "brand_multiplier": multiplier, "final_score": final_score, "heat_label": get_heat_label(final_score), "controversy_active": controversy_active, "multiplier_suppressed": multiplier_suppressed, "bonus_events": bonus_events, "sub_scores": sub_scores}
+def log_norm(value: float, k: float = 80_000_000) -> float:
+    if value <= 0:
+        return 0.0
+    return math.log1p(value) / math.log1p(k)
 
 
-def fetch_artists(db: Client, offset: int = 0) -> list:
-    rows = (db.table("artists").select("id, name, monthly_listeners, career_stage, stage_transition_buffer, controversy_flag").range(offset, offset + BATCH_SIZE - 1).execute()).data
-    artists = []
-    for row in rows:
-        artist = ArtistRecord(id=row["id"], name=row["name"], monthly_listeners=row.get("monthly_listeners", 0) or 0, career_stage=row.get("career_stage", "emerging"), stage_transition_buffer=row.get("stage_transition_buffer", 0) or 0, controversy_flag=row.get("controversy_flag", False))
-        def latest(table):
-            r = (db.table(table).select("*").eq("artist_id", artist.id).order("captured_at", desc=True).limit(1).execute()).data
-            return r[0] if r else {}
-        ss = latest("artist_streaming_signals")
-        artist.streaming = StreamingSignal(spotify_listeners=ss.get("spotify_listeners", 0) or 0, spotify_streams_7d=ss.get("spotify_streams_7d", 0) or 0, youtube_views_7d=ss.get("youtube_views_7d", 0) or 0, audiomack_plays_7d=ss.get("audiomack_plays_7d", 0) or 0, listener_delta_7d=float(ss.get("listener_delta_7d", 0) or 0), stream_delta_7d=float(ss.get("stream_delta_7d", 0) or 0), editorial_playlists=ss.get("editorial_playlists", 0) or 0, algo_playlists=ss.get("algo_playlists", 0) or 0, soundcharts_rank=ss.get("soundcharts_rank"), chart_delta_7d=ss.get("chart_delta_7d", 0) or 0)
-        se = latest("artist_sentiment_signals")
-        artist.sentiment = SentimentSignal(afinn_avg=float(se.get("afinn_avg", 0) or 0), afinna_sample_size=se.get("afinn_sample_size", 0) or 0, mention_count_7d=se.get("mention_count_7d", 0) or 0, valence_slope_7d=float(se.get("valence_slope_7d", 0) or 0), is_controversy=bool(se.get("is_controversy", False)))
-        r = latest("artist_radio_signals")
-        artist.radio = RadioSignal(indie_spins_7d=r.get("indie_spins_7d", 0) or 0, indie_stations_7d=r.get("indie_stations_7d", 0) or 0, indie_stations_new_7d=r.get("indie_stations_new_7d", 0) or 0, indie_stations_lost_7d=r.get("indie_stations_lost_7d", 0) or 0, commercial_spins_7d=r.get("commercial_spins_7d", 0) or 0, commercial_stations_7d=r.get("commercial_stations_7d", 0) or 0, format_count_7d=r.get("format_count_7d", 0) or 0)
-        bs = latest("artist_brand_signals")
-        artist.brand = BrandSignal(followers_total=bs.get("followers_total", 0) or 0, follower_growth_30d=float(bs.get("follower_growth_30d", 0) or 0), active_platforms=bs.get("active_platforms", 0) or 0, engagement_rate=float(bs.get("engagement_rate", 0) or 0), tastemaker_recognition_score=float(bs.get("tastemaker_recognition_score", 0) or 0), genre_cooccurrence_score=float(bs.get("genre_cooccurrence_score", 0) or 0), wikipedia_article_exists=bool(bs.get("wikipedia_article_exists", False)), wikipedia_edits_7d=bs.get("wikipedia_edits_7d", 0) or 0, wikipedia_inbound_links=bs.get("wikipedia_inbound_links", 0) or 0, sync_weight_90d=float(bs.get("sync_weight_90d", 0) or 0), brand_partnerships_90d=bs.get("brand_partnerships_90d", 0) or 0, media_appearances_90d=bs.get("media_appearances_90d", 0) or 0)
-        ps = latest("artist_press_signals")
-        artist.press = PressSignal(article_count_7d=ps.get("article_count_7d", 0) or 0, tier1_count_7d=ps.get("tier1_count_7d", 0) or 0, tier2_count_7d=ps.get("tier2_count_7d", 0) or 0, tier3_count_7d=ps.get("tier3_count_7d", 0) or 0, press_afinn_avg=float(ps.get("press_afinn_avg", 0) or 0))
-        artists.append(artist)
-    return artists
+def baseline_score(monthly_listeners: int, stage: str) -> float:
+    """Score purely from monthly listeners when no signals exist yet."""
+    w = STAGE_WEIGHTS.get(stage, STAGE_WEIGHTS["established"])
+    ln = log_norm(monthly_listeners)
+    # Streaming + brand from listeners, others at neutral 0.25
+    pts = (ln * w["streaming"]
+         + ln * 0.7 * w["brand"]
+         + 0.25 * w["sentiment"]
+         + 0.25 * w["radio"]
+         + 0.25 * w["press"])
+    return round(min(pts, 96.0), 2)
 
 
-def write_score(db: Client, result: dict) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    db.table("artists").update({"heat_score": result["final_score"], "heat_label": result["heat_label"], "career_stage": result["career_stage"], "stage_transition_buffer": result["stage_buffer"], "controversy_flag": result["controversy_active"], "last_scored_at": now}).eq("id", result["artist_id"]).execute()
-    db.table("artist_heat_history").insert({"artist_id": result["artist_id"], "scored_at": now, "career_stage": result["career_stage"], "streaming_score": result["streaming_score"], "brand_score": result["brand_score"], "sentiment_score": result["sentiment_score"], "radio_score": result["radio_score"], "press_score": result["press_score"], "bonus_pts": result["bonus_pts"], "base_score": result["base_score"], "brand_multiplier": result["brand_multiplier"], "final_score": result["final_score"], "heat_label": result["heat_label"], "controversy_active": result["controversy_active"], "multiplier_suppressed": result["multiplier_suppressed"]}).execute()
-    for bonus in result.get("bonus_events", []):
-        db.table("artist_bonus_events").insert(bonus).execute()
+def fetch_signal(db: Client, table: str, artist_id: str) -> dict:
+    try:
+        r = (db.table(table).select("*")
+               .eq("artist_id", artist_id)
+               .order("captured_at", desc=True)
+               .limit(1).execute()).data
+        return r[0] if r else {}
+    except Exception as e:
+        log.warning(f"Signal fetch failed {table}/{artist_id}: {e}")
+        return {}
+
+
+def score_with_signals(row: dict, sigs: dict, stage: str) -> dict:
+    w  = STAGE_WEIGHTS.get(stage, STAGE_WEIGHTS["established"])
+    ml = int(row.get("monthly_listeners") or 0)
+
+    ss   = sigs.get("streaming", {})
+    sent = sigs.get("sentiment", {})
+    br   = sigs.get("brand", {})
+    rad  = sigs.get("radio", {})
+    prs  = sigs.get("press", {})
+
+    s_stream   = log_norm(ss.get("spotify_listeners") or ml)
+    s_sent     = (float(sent.get("afinn_avg") or 0) + 1) / 2 if sent else 0.25
+    s_brand    = (float(br.get("brand_base_score") or 0) / 100) if br else log_norm(ml) * 0.7
+    s_radio    = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.25
+    s_press    = log_norm(int(prs.get("article_count_7d") or 0), 50) if prs else 0.25
+    brand_mult = float(br.get("brand_multiplier") or 1.0)
+
+    sp  = s_stream * w["streaming"]
+    bp  = s_brand  * w["brand"] * brand_mult
+    sep = s_sent   * w["sentiment"]
+    rp  = s_radio  * w["radio"]
+    pp  = s_press  * w["press"]
+    base = sp + bp + sep + rp + pp
+
+    return {
+        "streaming_score": round(sp, 2),
+        "brand_score":     round(bp, 2),
+        "sentiment_score": round(sep, 2),
+        "radio_score":     round(rp, 2),
+        "press_score":     round(pp, 2),
+        "base_score":      round(base, 2),
+        "final_score":     round(min(base, 110.0), 2),
+        "brand_multiplier": brand_mult,
+    }
 
 
 def run() -> None:
     db = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    log.info("Heat scorer starting")
-    offset = 0; total_scored = 0
+    log.info("Heat scorer v2 starting")
+
+    offset = 0
+    total_scored = 0
+    total_errors = 0
+
     while True:
-        artists = fetch_artists(db, offset=offset)
-        if not artists: break
-        for artist in artists:
+        try:
+            rows = (db.table("artists")
+                      .select("id, name, monthly_listeners, career_stage, genres")
+                      .range(offset, offset + BATCH_SIZE - 1)
+                      .execute()).data
+        except Exception as e:
+            log.error(f"Failed to fetch artists at offset {offset}: {e}")
+            break
+
+        if not rows:
+            break
+
+        log.info(f"Scoring batch offset={offset} count={len(rows)}")
+
+        for row in rows:
+            artist_id = row["id"]
+            name      = row.get("name", "?")
+            listeners = int(row.get("monthly_listeners") or 0)
+            stage     = row.get("career_stage") or "established"
+
             try:
-                result = calculate_heat_score(artist)
-                write_score(db, result)
-                log.info(f"Scored {artist.name} [{result['career_stage']}] → {result['final_score']} ({result['heat_label']})")
+                sigs = {
+                    "streaming": fetch_signal(db, "artist_streaming_signals", artist_id),
+                    "sentiment": fetch_signal(db, "artist_sentiment_signals", artist_id),
+                    "brand":     fetch_signal(db, "artist_brand_signals",     artist_id),
+                    "radio":     fetch_signal(db, "artist_radio_signals",     artist_id),
+                    "press":     fetch_signal(db, "artist_press_signals",     artist_id),
+                }
+                has_sigs = any(sigs.values())
+
+                if has_sigs:
+                    sc = score_with_signals(row, sigs, stage)
+                else:
+                    base = baseline_score(listeners, stage)
+                    w    = STAGE_WEIGHTS.get(stage, STAGE_WEIGHTS["established"])
+                    sc   = {
+                        "streaming_score": round(base * w["streaming"] / 96, 2),
+                        "brand_score":     round(base * w["brand"]     / 96, 2),
+                        "sentiment_score": round(base * w["sentiment"] / 96, 2),
+                        "radio_score":     round(base * w["radio"]     / 96, 2),
+                        "press_score":     round(base * w["press"]     / 96, 2),
+                        "base_score":      base,
+                        "final_score":     base,
+                        "brand_multiplier": 1.0,
+                    }
+
+                final  = sc["final_score"]
+                label  = get_heat_label(final)
+                now    = datetime.now(timezone.utc).isoformat()
+
+                # Update artists — only columns confirmed to exist
+                db.table("artists").update({
+                    "heat_score":     final,
+                    "heat_label":     label,
+                    "last_scored_at": now,
+                }).eq("id", artist_id).execute()
+
+                # Insert heat history record
+                db.table("artist_heat_history").insert({
+                    "artist_id":             artist_id,
+                    "scored_at":             now,
+                    "career_stage":          stage,
+                    "streaming_score":       sc["streaming_score"],
+                    "brand_score":           sc["brand_score"],
+                    "sentiment_score":       sc["sentiment_score"],
+                    "radio_score":           sc["radio_score"],
+                    "press_score":           sc["press_score"],
+                    "bonus_pts":             0.0,
+                    "base_score":            sc["base_score"],
+                    "brand_multiplier":      sc["brand_multiplier"],
+                    "final_score":           final,
+                    "heat_label":            label,
+                    "controversy_active":    False,
+                    "multiplier_suppressed": False,
+                }).execute()
+
+                log.info(f"OK {name} [{stage}] {final} ({label}) sigs={'yes' if has_sigs else 'baseline'}")
                 total_scored += 1
+
             except Exception as e:
-                log.error(f"Failed to score {artist.name}: {e}", exc_info=True)
+                log.error(f"FAIL {name}: {e}", exc_info=True)
+                total_errors += 1
+
         offset += BATCH_SIZE
-    log.info(f"Heat scorer complete. Scored {total_scored} artists.")
+
+    log.info(f"Done. scored={total_scored} errors={total_errors}")
 
 
 if __name__ == "__main__":
