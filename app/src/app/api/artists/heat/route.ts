@@ -1,67 +1,76 @@
-/**
- * app/api/artists/heat/route.ts
- *
- * Next.js 14 App Router API route.
- * Returns artist heat scores for the frontend feed.
- *
- * Endpoints:
- *   GET /api/artists/heat              Ã¢ÂÂ leaderboard (top N by heat score)
- *   GET /api/artists/heat?id=<uuid>    Ã¢ÂÂ single artist full breakdown
- *   GET /api/artists/heat?stage=emerging Ã¢ÂÂ filter by career stage
- *
- * Uses Supabase anon key (public read via RLS).
- * Cached at edge for 60 seconds.
- */
+import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
 
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
-type CareerStage = "emerging" | "rising" | "breaking" | "established";
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const limit = parseInt(searchParams.get('limit') || '50')
+  const stage = searchParams.get('stage')
 
-interface ArtistHeatRow {
-  id: string; name: string; career_stage: CareerStage; heat_score: number;
-  heat_label: string; controversy_flag: boolean; last_scored_at: string;
-  streaming_score: number|null; brand_base_score: number|null;
-  brand_multiplier: number|null; sentiment_score: number|null;
-  afinn_avg: number|null; is_controversy: boolean|null;
-  radio_score: number|null; press_score: number|null;
-}
+  let query = supabase
+    .from('artists')
+    .select('id, name, heat_score, heat_label, career_stage, last_scored_at, monthly_listeners')
+    .gt('heat_score', 0)
+    .order('heat_score', { ascending: false })
+    .limit(limit)
 
-function getDb() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) throw new Error("Supabase env vars missing");
-  return createClient(url, key);
-}
+  if (stage) query = query.eq('career_stage', stage)
 
-export async function GET(req: NextRequest) {
-  const db = getDb();
-  const params = req.nextUrl.searchParams;
-  const artistId = params.get("id");
-  const stage = params.get("stage") as CareerStage|null;
-  const limit = Math.min(parseInt(params.get("limit")??"50"),200);
-  const offset = parseInt(params.get("offset")??"0");
-  if (artistId) {
-    if (!/^[0-9a-f-]{36}$/.test(artistId)) return NextResponse.json({error:"Invalid ID"},{status:400});
-    const {data:artists,error} = await db.from("artist_latest_signals").select("*").eq("id",artistId).limit(1);
-    if (error) return NextResponse.json({error:"DB error"},{status:500});
-    if (!artists?.length) return NextResponse.json({error:"Not found"},{status:404});
-    const {data:history} = await db.from("artist_heat_history").select("scored_at,final_score,career_stage,streaming_score,brand_score,sentiment_score,radio_score,press_score,bonus_pts,brand_multiplier,heat_label,controversy_active").eq("artist_id",artistId).gte("scored_at",new Date(Date.now()-604800000).toISOString()).order("scored_at",{ascending:true});
-    const row = artists[0];
-    return NextResponse.json({...row,history_7d:history??[]},{headers:{"Cache-Control":"public, s-maxage=60"}});
+  const { data: artists, error } = await query
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (!artists?.length) return NextResponse.json({ artists: [] })
+
+  // For each artist fetch score from 24h ago for delta calculation
+  const now = new Date()
+  const ago24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+  const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
+
+  const artistIds = artists.map(a => a.id)
+
+  // Get oldest score in last 24h window per artist (i.e. score at ~24h ago)
+  const { data: hist24h } = await supabase
+    .from('artist_heat_history')
+    .select('artist_id, final_score, scored_at')
+    .in('artist_id', artistIds)
+    .gte('scored_at', ago24h)
+    .order('scored_at', { ascending: true })
+
+  // Get oldest score in last 1h window per artist
+  const { data: hist1h } = await supabase
+    .from('artist_heat_history')
+    .select('artist_id, final_score, scored_at')
+    .in('artist_id', artistIds)
+    .gte('scored_at', ago1h)
+    .order('scored_at', { ascending: true })
+
+  // Build lookup: first record per artist in each window = score at start of window
+  const firstIn24h: Record<string, number> = {}
+  const firstIn1h:  Record<string, number> = {}
+
+  for (const row of (hist24h || [])) {
+    if (!firstIn24h[row.artist_id]) firstIn24h[row.artist_id] = row.final_score
   }
-  let q = db.from("artist_heat_leaderboard").select("id,name,career_stage,heat_score,heat_label,controversy_flag,last_scored_at,score_delta_7d",{count:"exact"});
-  if (stage) q = q.eq("career_stage",stage);
-  const {data:lb,error:e2,count} = await q.order("heat_score",{ascending:false}).range(offset,offset+limit-1);
-  if (e2) return NextResponse.json({error:"DB error"},{status:500});
-  return NextResponse.json({artists:lb??[],total:count??0,stage_filter:stage,generated_at:new Date().toISOString()},{headers:{
-   "Cache-Control":"public, s-maxage=60, stale-while-revalidate=30"}});
-}
+  for (const row of (hist1h || [])) {
+    if (!firstIn1h[row.artist_id]) firstIn1h[row.artist_id] = row.final_score
+  }
 
-export async function POST(req: NextRequest) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.TUNEDEX_ADMIN_SECRET}`) return NextResponse.json({error:"Unauthorised"},{status:401});
-  const body = await req.json().catch(()=>null);
-  if (!body?.artist_id) return NextResponse.json({error:"artist_id required"},{status:400});
-  return NextResponse.json({message:`Rescore queued for ${body.artist_id}`,note:"Scorer runs every 15min."});
+  // Attach deltas and rank
+  const enriched = artists.map((artist, idx) => {
+    const prev24 = firstIn24h[artist.id]
+    const prev1  = firstIn1h[artist.id]
+    const delta24h = prev24 != null ? parseFloat(((artist.heat_score - prev24) / prev24 * 100).toFixed(1)) : null
+    const delta1h  = prev1  != null ? parseFloat(((artist.heat_score - prev1)  / prev1  * 100).toFixed(1)) : null
+    return {
+      ...artist,
+      rank: idx + 1,
+      delta_24h: delta24h,   // % change over 24h
+      delta_1h:  delta1h,    // % change over 1h
+    }
+  })
+
+  return NextResponse.json({ artists: enriched, scored_at: now.toISOString() })
 }
