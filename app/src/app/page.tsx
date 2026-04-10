@@ -35,55 +35,74 @@ const LABEL_COLOUR: Record<string, string> = {
 
 function DeltaBadge({ value, label }: { value: number | null; label: string }) {
   if (value === null) return null
-  const up = value > 0
-  const flat = value === 0
-  const colour = flat ? 'text-slate-500' : up ? 'text-emerald-400' : 'text-rose-400'
-  const bg     = flat ? 'bg-slate-800' : up ? 'bg-emerald-500/10' : 'bg-rose-500/10'
-  const border = flat ? 'border-slate-700' : up ? 'border-emerald-500/20' : 'border-rose-500/20'
-  const sign   = flat ? '' : up ? '+' : ''
+  const up   = value > 0.05
+  const down = value < -0.05
+  const colour = down ? 'text-rose-400' : up ? 'text-emerald-400' : 'text-slate-500'
+  const bg     = down ? 'bg-rose-500/10 border-rose-500/20' : up ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-800 border-slate-700'
+  const sign   = up ? '+' : ''
   return (
-    <span className={`inline-flex items-center gap-0.5 text-xs font-medium px-1.5 py-0.5 rounded border ${bg} ${border} ${colour}`}>
-      {!flat && <span className="text-[10px]">{up ? '▲' : '▼'}</span>}
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${bg} ${colour}`}>
+      {up && <span className="text-[9px]">▲</span>}
+      {down && <span className="text-[9px]">▼</span>}
       {sign}{value.toFixed(1)}%
-      <span className="text-[10px] opacity-60 ml-0.5">{label}</span>
+      <span className="opacity-50 ml-0.5">{label}</span>
     </span>
   )
-}
-
-function RankArrow({ delta }: { delta: number | null }) {
-  if (delta === null || delta === 0) return <span className="text-slate-700 text-sm">—</span>
-  if (delta > 0) return <span className="text-emerald-400 text-sm font-bold">▲</span>
-  return <span className="text-rose-400 text-sm font-bold">▼</span>
 }
 
 function timeAgo(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
   if (diff < 1) return 'just now'
-  if (diff < 60) return `${diff}m ago`
-  return `${Math.floor(diff / 60)}h ago`
+  if (diff < 60) return diff + 'm ago'
+  return Math.floor(diff / 60) + 'h ago'
+}
+
+async function getLeaderboard(): Promise<Artist[]> {
+  const { data: artists } = await supabase
+    .from('artists')
+    .select('id, name, heat_score, heat_label, career_stage, last_scored_at, monthly_listeners')
+    .gt('heat_score', 0)
+    .order('heat_score', { ascending: false })
+    .limit(50)
+
+  if (!artists?.length) return []
+
+  const now    = new Date()
+  const ago24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+  const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
+  const ids    = artists.map(a => a.id)
+
+  const [{ data: hist24h }, { data: hist1h }] = await Promise.all([
+    supabase.from('artist_heat_history').select('artist_id, final_score').in('artist_id', ids).gte('scored_at', ago24h).order('scored_at', { ascending: true }),
+    supabase.from('artist_heat_history').select('artist_id, final_score').in('artist_id', ids).gte('scored_at', ago1h).order('scored_at', { ascending: true }),
+  ])
+
+  const first24: Record<string, number> = {}
+  const first1:  Record<string, number> = {}
+  for (const row of (hist24h || [])) if (!first24[row.artist_id]) first24[row.artist_id] = row.final_score
+  for (const row of (hist1h  || [])) if (!first1[row.artist_id])  first1[row.artist_id]  = row.final_score
+
+  return artists.map((a, i) => {
+    const p24 = first24[a.id]
+    const p1  = first1[a.id]
+    return {
+      ...a,
+      rank: i + 1,
+      delta_24h: p24 != null && p24 > 0 ? parseFloat(((a.heat_score - p24) / p24 * 100).toFixed(1)) : null,
+      delta_1h:  p1  != null && p1  > 0 ? parseFloat(((a.heat_score - p1)  / p1  * 100).toFixed(1)) : null,
+    }
+  })
 }
 
 export const revalidate = 60
 
 export default async function Home() {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/rpc/get_heat_leaderboard`, {
-    headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY! },
-    cache: 'no-store',
-  }).catch(() => null)
-
-  // Fall back to direct API call
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000'
-
-  const apiRes = await fetch(`${baseUrl}/api/artists/heat?limit=50`, { cache: 'no-store' })
-  const { artists = [] }: { artists: Artist[] } = await apiRes.json().catch(() => ({ artists: [] }))
+  const artists = await getLeaderboard()
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-10">
 
-        {/* Header */}
         <div className="mb-8 flex items-end justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">
@@ -94,76 +113,73 @@ export default async function Home() {
             </p>
           </div>
           <div className="text-right">
-            <div className="text-xs text-slate-600">last updated</div>
+            <div className="text-xs text-slate-600">last scored</div>
             <div className="text-xs text-slate-400">
               {artists[0]?.last_scored_at ? timeAgo(artists[0].last_scored_at) : '—'}
             </div>
           </div>
         </div>
 
-        {/* Legend */}
-        <div className="flex gap-3 mb-5 text-xs text-slate-500 flex-wrap">
-          <span className="flex items-center gap-1"><span className="text-emerald-400 text-[10px]">▲</span> rising score</span>
-          <span className="flex items-center gap-1"><span className="text-rose-400 text-[10px]">▼</span> falling score</span>
-          <span className="flex items-center gap-1 ml-2">badges show % change vs</span>
-          <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px]">1h</span>
-          <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px]">24h</span>
+        <div className="flex gap-3 mb-5 text-xs text-slate-600 flex-wrap items-center">
+          <span className="flex items-center gap-1"><span className="text-emerald-400 text-[10px]">▲</span> gaining</span>
+          <span className="flex items-center gap-1"><span className="text-rose-400 text-[10px]">▼</span> falling</span>
+          <span className="ml-1">· % vs</span>
+          <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] font-medium">1h</span>
+          <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] font-medium">24h</span>
         </div>
 
-        {/* Table header */}
-        <div className="grid grid-cols-[32px_16px_1fr_auto] gap-3 px-3 mb-2 text-xs text-slate-600 uppercase tracking-wider">
-          <span>#</span>
+        <div className="grid grid-cols-[28px_14px_1fr_auto] gap-3 px-3 mb-2 text-[10px] text-slate-600 uppercase tracking-widest">
+          <span className="text-right">#</span>
           <span></span>
           <span>Artist</span>
           <span className="text-right">Score</span>
         </div>
 
-        {/* Leaderboard */}
         {artists.length === 0 ? (
-          <div className="text-slate-600 text-sm py-12 text-center">
-            Pipeline warming up — check back in 15 minutes.
+          <div className="text-slate-600 text-sm py-16 text-center">
+            Pipeline warming up — check back in 15 min.
           </div>
         ) : (
-          <div className="space-y-1.5">
-            {artists.map((artist) => (
-              <div
-                key={artist.id}
-                className="grid grid-cols-[32px_16px_1fr_auto] gap-3 items-center px-3 py-3 rounded-xl bg-white/[0.03] border border-white/[0.05] hover:bg-white/[0.06] hover:border-white/[0.08] transition-all"
-              >
-                {/* Rank */}
-                <span className="text-slate-600 text-sm tabular-nums text-right">{artist.rank}</span>
+          <div className="space-y-1">
+            {artists.map((a) => (
+              <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-3 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.05] transition-colors">
 
-                {/* Arrow */}
-                <RankArrow delta={artist.delta_24h} />
+                <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
 
-                {/* Name + badges */}
+                <span className="text-xs font-bold">
+                  {a.delta_24h === null ? <span className="text-slate-700">—</span>
+                    : a.delta_24h > 0.05 ? <span className="text-emerald-400">▲</span>
+                    : a.delta_24h < -0.05 ? <span className="text-rose-400">▼</span>
+                    : <span className="text-slate-600">—</span>}
+                </span>
+
                 <div className="min-w-0">
-                  <div className="font-medium text-sm truncate">{artist.name}</div>
-                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STAGE_STYLE[artist.career_stage] ?? STAGE_STYLE.emerging}`}>
-                      {artist.career_stage}
+                  <div className="font-medium text-sm leading-snug truncate">{a.name}</div>
+                  <div className="flex items-center gap-1 mt-1 flex-wrap">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STAGE_STYLE[a.career_stage] ?? STAGE_STYLE.emerging}`}>
+                      {a.career_stage}
                     </span>
-                    <DeltaBadge value={artist.delta_1h}  label="1h" />
-                    <DeltaBadge value={artist.delta_24h} label="24h" />
+                    <DeltaBadge value={a.delta_1h}  label="1h" />
+                    <DeltaBadge value={a.delta_24h} label="24h" />
                   </div>
                 </div>
 
-                {/* Score */}
-                <div className="text-right flex-shrink-0">
-                  <div className={`text-[11px] font-medium ${LABEL_COLOUR[artist.heat_label] ?? 'text-slate-400'}`}>
-                    {artist.heat_label}
+                <div className="text-right flex-shrink-0 pl-2">
+                  <div className={`text-[10px] font-semibold ${LABEL_COLOUR[a.heat_label] ?? 'text-slate-500'}`}>
+                    {a.heat_label}
                   </div>
-                  <div className="text-xl font-bold tabular-nums leading-none mt-0.5">
-                    {artist.heat_score?.toFixed(1)}
+                  <div className="text-[22px] font-bold tabular-nums leading-none mt-0.5">
+                    {a.heat_score?.toFixed(1)}
                   </div>
                 </div>
+
               </div>
             ))}
           </div>
         )}
 
-        <div className="mt-8 text-center text-xs text-slate-700">
-          Scores based on streaming, press, sentiment, brand & radio signals
+        <div className="mt-10 text-center text-xs text-slate-700">
+          Signals: streaming · press · sentiment · brand · radio
         </div>
       </div>
     </div>
