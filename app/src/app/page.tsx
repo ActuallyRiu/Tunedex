@@ -15,8 +15,8 @@ interface Artist {
   delta_1h: number | null
 }
 
-const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const SUPA_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const SUPA_URL = 'https://lwmzrccvwxbdrrpzojeg.supabase.co'
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3bXpyY2N2d3hiZHJycHpvamVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTk4NDcsImV4cCI6MjA5MDQzNTg0N30.frFP2f0XrwgOrHAgdcSUwn3HBE2wYnFdhQLiU-7YJ4Y'
 
 const STAGE_STYLE: Record<string, string> = {
   established: 'bg-violet-500/15 text-violet-300 border-violet-500/25',
@@ -51,8 +51,8 @@ function DeltaBadge({ value, label }: { value: number | null; label: string }) {
   const bg = dn ? 'bg-rose-500/10 border-rose-500/20' : up ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-800 border-slate-700'
   return (
     <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${bg} ${colour}`}>
-      {up && <span className="text-[9px]">▲</span>}
-      {dn && <span className="text-[9px]">▼</span>}
+      {up && <span className="text-[9px]">&#x25b2;</span>}
+      {dn && <span className="text-[9px]">&#x25bc;</span>}
       {up ? '+' : ''}{value.toFixed(1)}%
       <span className="opacity-50 ml-0.5">{label}</span>
     </span>
@@ -81,8 +81,8 @@ async function fetchArtists(): Promise<Artist[]> {
 
   const first24: Record<string, number> = {}
   const first1:  Record<string, number> = {}
-  for (const r of (h24 || [])) if (!first24[r.artist_id]) first24[r.artist_id] = r.final_score
-  for (const r of (h1  || [])) if (!first1[r.artist_id])  first1[r.artist_id]  = r.final_score
+  for (const row of (h24 || [])) if (!first24[row.artist_id]) first24[row.artist_id] = row.final_score
+  for (const row of (h1  || [])) if (!first1[row.artist_id])  first1[row.artist_id]  = row.final_score
 
   return raw.map((a, i) => {
     const p24 = first24[a.id]
@@ -133,40 +133,27 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-8">
-
         <div className="mb-6 flex items-end justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              Tunedex <span className="text-emerald-400">Heat Index</span>
-            </h1>
+            <h1 className="text-2xl font-bold tracking-tight">Tunedex <span className="text-emerald-400">Heat Index</span></h1>
             <p className="text-slate-500 mt-1 text-sm">
-              {loading ? 'Loading…' : `${artists.length} artists · ${filtered.length} shown`}
-              {!loading && artists[0]?.last_scored_at && (
-                <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>
-              )}
+              {loading ? 'Loading…' : artists.length + ' artists · ' + filtered.length + ' shown'}
+              {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>}
             </p>
           </div>
         </div>
 
         <div className="relative mb-3">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
-          <input
-            type="text"
-            placeholder="Search artists…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all"
-          />
-          {search && (
-            <button onClick={() => setSearch('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>
-          )}
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">&#x1F50D;</span>
+          <input type="text" placeholder="Search artists…" value={search} onChange={e => setSearch(e.target.value)}
+            className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
+          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>}
         </div>
 
         <div className="flex gap-1 mb-2 flex-wrap">
           {STAGES.map(s => (
             <button key={s} onClick={() => setStage(s)}
-              className={`text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ${stageFilter === s ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10'}`}>
+              className={'text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ' + (stageFilter === s ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10')}>
               {s === 'all' ? 'All stages' : s}
             </button>
           ))}
@@ -176,7 +163,7 @@ export default function Home() {
           <div className="flex gap-1 flex-wrap">
             {LABELS.map(l => (
               <button key={l} onClick={() => setLabel(l)}
-                className={`text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ${labelFilter === l ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10'}`}>
+                className={'text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ' + (labelFilter === l ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10')}>
                 {l === 'all' ? 'All heat' : l}
               </button>
             ))}
@@ -191,59 +178,42 @@ export default function Home() {
         </div>
 
         <div className="grid grid-cols-[28px_14px_1fr_auto] gap-3 px-3 mb-2 text-[10px] text-slate-600 uppercase tracking-widest">
-          <span className="text-right">#</span>
-          <span></span>
-          <span>Artist</span>
-          <span className="text-right">Score</span>
+          <span className="text-right">#</span><span></span><span>Artist</span><span className="text-right">Score</span>
         </div>
 
         {loading ? (
-          <div className="space-y-1">
-            {[...Array(10)].map((_, i) => (
-              <div key={i} className="h-14 rounded-xl bg-white/[0.03] border border-white/[0.04] animate-pulse" />
-            ))}
-          </div>
+          <div className="space-y-1">{[...Array(10)].map((_, i) => <div key={i} className="h-14 rounded-xl bg-white/[0.03] border border-white/[0.04] animate-pulse" />)}</div>
         ) : filtered.length === 0 ? (
           <div className="py-16 text-center">
             <div className="text-slate-500 text-sm">No artists match</div>
-            <button onClick={() => { setSearch(''); setStage('all'); setLabel('all') }}
-              className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 transition-colors">Clear all filters</button>
+            <button onClick={() => { setSearch(''); setStage('all'); setLabel('all') }} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300">Clear all filters</button>
           </div>
         ) : (
           <div className="space-y-1">
             {filtered.map(a => (
-              <div key={a.id}
-                className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
+              <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
                 <span className="text-xs font-bold">
-                  {a.delta_24h === null ? <span className="text-slate-700">—</span>
-                    : a.delta_24h >  0.05 ? <span className="text-emerald-400">▲</span>
-                    : a.delta_24h < -0.05 ? <span className="text-rose-400">▼</span>
-                    : <span className="text-slate-600">—</span>}
+                  {a.delta_24h === null ? <span className="text-slate-700">—</span> : a.delta_24h > 0.05 ? <span className="text-emerald-400">&#x25b2;</span> : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span> : <span className="text-slate-600">—</span>}
                 </span>
                 <div className="min-w-0">
                   <div className="font-medium text-sm leading-snug truncate">{a.name}</div>
                   <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${STAGE_STYLE[a.career_stage] ?? STAGE_STYLE.emerging}`}>
-                      {a.career_stage}
-                    </span>
-                    <DeltaBadge value={a.delta_1h}  label="1h" />
+                    <span className={'text-[10px] px-1.5 py-0.5 rounded border font-medium ' + (STAGE_STYLE[a.career_stage] ?? STAGE_STYLE.emerging)}>{a.career_stage}</span>
+                    <DeltaBadge value={a.delta_1h} label="1h" />
                     <DeltaBadge value={a.delta_24h} label="24h" />
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0 pl-2">
-                  <div className={`text-[10px] font-semibold ${LABEL_COLOUR[a.heat_label] ?? 'text-slate-500'}`}>{a.heat_label}</div>
+                  <div className={'text-[10px] font-semibold ' + (LABEL_COLOUR[a.heat_label] ?? 'text-slate-500')}>{a.heat_label}</div>
                   <div className="text-[22px] font-bold tabular-nums leading-none mt-0.5">{a.heat_score?.toFixed(1)}</div>
                 </div>
               </div>
             ))}
           </div>
         )}
-
         {!loading && filtered.length > 0 && (
-          <div className="mt-5 text-center text-xs text-slate-700">
-            {filtered.length} of {artists.length} artists · Signals: streaming · press · sentiment · brand · radio
-          </div>
+          <div className="mt-5 text-center text-xs text-slate-700">{filtered.length} of {artists.length} artists · Signals: streaming · press · sentiment · brand · radio</div>
         )}
       </div>
     </div>
