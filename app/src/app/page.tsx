@@ -17,6 +17,7 @@ interface Artist {
 
 const SUPA_URL = 'https://lwmzrccvwxbdrrpzojeg.supabase.co'
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3bXpyY2N2d3hiZHJycHpvamVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTk4NDcsImV4cCI6MjA5MDQzNTg0N30.frFP2f0XrwgOrHAgdcSUwn3HBE2wYnFdhQLiU-7YJ4Y'
+const PAGE_SIZE = 75
 
 const STAGE_STYLE: Record<string, string> = {
   established: 'bg-violet-500/15 text-violet-300 border-violet-500/25',
@@ -73,7 +74,6 @@ async function fetchArtists(): Promise<Artist[]> {
   if (!raw?.length) return []
 
   const ids = raw.map(a => a.id).join(',')
-
   const [h24, h1] = await Promise.all([
     fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&artist_id=in.(' + ids + ')&scored_at=gte.' + ago24h + '&order=scored_at.asc&limit=2000', { headers: H }).then(r => r.json()),
     fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&artist_id=in.(' + ids + ')&scored_at=gte.' + ago1h  + '&order=scored_at.asc&limit=2000', { headers: H }).then(r => r.json()),
@@ -103,6 +103,7 @@ export default function Home() {
   const [stageFilter, setStage] = useState('all')
   const [labelFilter, setLabel] = useState('all')
   const [sortBy, setSort]       = useState<'score' | 'delta_24h' | 'delta_1h' | 'name'>('score')
+  const [page, setPage]         = useState(1)
 
   useEffect(() => {
     async function load() {
@@ -115,6 +116,9 @@ export default function Home() {
     const t = setInterval(load, 60000)
     return () => clearInterval(t)
   }, [])
+
+  // Reset to page 1 whenever filters/search/sort change
+  useEffect(() => { setPage(1) }, [search, stageFilter, labelFilter, sortBy])
 
   const filtered = useMemo(() => {
     let list = [...artists]
@@ -130,26 +134,44 @@ export default function Home() {
     return list
   }, [artists, search, stageFilter, labelFilter, sortBy])
 
+  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage    = Math.min(page, totalPages)
+  const pageStart   = (safePage - 1) * PAGE_SIZE
+  const pageItems   = filtered.slice(pageStart, pageStart + PAGE_SIZE)
+
+  // Page number buttons — show up to 7 around current page
+  const pageNums = useMemo(() => {
+    const nums: number[] = []
+    const start = Math.max(1, safePage - 3)
+    const end   = Math.min(totalPages, safePage + 3)
+    for (let i = start; i <= end; i++) nums.push(i)
+    return nums
+  }, [safePage, totalPages])
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-8">
+
+        {/* Header */}
         <div className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Tunedex <span className="text-emerald-400">Heat Index</span></h1>
             <p className="text-slate-500 mt-1 text-sm">
-              {loading ? 'Loadingâ¦' : artists.length + ' artists Â· ' + filtered.length + ' shown'}
-              {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">Â· scored {timeAgo(artists[0].last_scored_at)}</span>}
+              {loading ? 'Loading…' : filtered.length + ' artists · page ' + safePage + ' of ' + totalPages}
+              {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>}
             </p>
           </div>
         </div>
 
+        {/* Search */}
         <div className="relative mb-3">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">&#x1F50D;</span>
-          <input type="text" placeholder="Search artistsâ¦" value={search} onChange={e => setSearch(e.target.value)}
+          <input type="text" placeholder="Search artists…" value={search} onChange={e => setSearch(e.target.value)}
             className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
-          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">â</button>}
+          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>}
         </div>
 
+        {/* Stage filter */}
         <div className="flex gap-1 mb-2 flex-wrap">
           {STAGES.map(s => (
             <button key={s} onClick={() => setStage(s)}
@@ -159,6 +181,7 @@ export default function Home() {
           ))}
         </div>
 
+        {/* Heat filter + sort */}
         <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
           <div className="flex gap-1 flex-wrap">
             {LABELS.map(l => (
@@ -173,28 +196,34 @@ export default function Home() {
             <option value="score">Sort: Score</option>
             <option value="delta_24h">Sort: 24h change</option>
             <option value="delta_1h">Sort: 1h change</option>
-            <option value="name">Sort: AâZ</option>
+            <option value="name">Sort: A–Z</option>
           </select>
         </div>
 
+        {/* Column headers */}
         <div className="grid grid-cols-[28px_14px_1fr_auto] gap-3 px-3 mb-2 text-[10px] text-slate-600 uppercase tracking-widest">
           <span className="text-right">#</span><span></span><span>Artist</span><span className="text-right">Score</span>
         </div>
 
+        {/* List */}
         {loading ? (
           <div className="space-y-1">{[...Array(10)].map((_, i) => <div key={i} className="h-14 rounded-xl bg-white/[0.03] border border-white/[0.04] animate-pulse" />)}</div>
-        ) : filtered.length === 0 ? (
+        ) : pageItems.length === 0 ? (
           <div className="py-16 text-center">
             <div className="text-slate-500 text-sm">No artists match</div>
-            <button onClick={() => { setSearch(''); setStage('all'); setLabel('all') }} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300">Clear all filters</button>
+            <button onClick={() => { setSearch(''); setStage('all'); setLabel('all') }}
+              className="mt-3 text-xs text-emerald-400 hover:text-emerald-300">Clear all filters</button>
           </div>
         ) : (
           <div className="space-y-1">
-            {filtered.map(a => (
+            {pageItems.map(a => (
               <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
                 <span className="text-xs font-bold">
-                  {a.delta_24h === null ? <span className="text-slate-700">â</span> : a.delta_24h > 0.05 ? <span className="text-emerald-400">&#x25b2;</span> : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span> : <span className="text-slate-600">â</span>}
+                  {a.delta_24h === null ? <span className="text-slate-700">—</span>
+                    : a.delta_24h >  0.05 ? <span className="text-emerald-400">&#x25b2;</span>
+                    : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span>
+                    : <span className="text-slate-600">—</span>}
                 </span>
                 <div className="min-w-0">
                   <div className="font-medium text-sm leading-snug truncate">{a.name}</div>
@@ -212,8 +241,52 @@ export default function Home() {
             ))}
           </div>
         )}
-        {!loading && filtered.length > 0 && (
-          <div className="mt-5 text-center text-xs text-slate-700">{filtered.length} of {artists.length} artists Â· Signals: streaming Â· press Â· sentiment Â· brand Â· radio</div>
+
+        {/* Pagination */}
+        {!loading && totalPages > 1 && (
+          <div className="mt-6 flex items-center justify-center gap-1">
+            <button onClick={() => { setPage(p => Math.max(1, p - 1)); window.scrollTo(0,0) }}
+              disabled={safePage === 1}
+              className="px-3 py-1.5 rounded-lg text-xs border transition-all disabled:opacity-20 disabled:cursor-not-allowed border-white/[0.07] text-slate-400 hover:bg-white/[0.05] hover:text-white">
+              ← Prev
+            </button>
+
+            {pageNums[0] > 1 && (
+              <>
+                <button onClick={() => { setPage(1); window.scrollTo(0,0) }}
+                  className="w-8 h-8 rounded-lg text-xs border border-white/[0.07] text-slate-500 hover:bg-white/[0.05] hover:text-white transition-all">1</button>
+                {pageNums[0] > 2 && <span className="text-slate-700 text-xs px-1">…</span>}
+              </>
+            )}
+
+            {pageNums.map(n => (
+              <button key={n} onClick={() => { setPage(n); window.scrollTo(0,0) }}
+                className={'w-8 h-8 rounded-lg text-xs border transition-all ' + (n === safePage ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 font-semibold' : 'border-white/[0.07] text-slate-400 hover:bg-white/[0.05] hover:text-white')}>
+                {n}
+              </button>
+            ))}
+
+            {pageNums[pageNums.length - 1] < totalPages && (
+              <>
+                {pageNums[pageNums.length - 1] < totalPages - 1 && <span className="text-slate-700 text-xs px-1">…</span>}
+                <button onClick={() => { setPage(totalPages); window.scrollTo(0,0) }}
+                  className="w-8 h-8 rounded-lg text-xs border border-white/[0.07] text-slate-500 hover:bg-white/[0.05] hover:text-white transition-all">{totalPages}</button>
+              </>
+            )}
+
+            <button onClick={() => { setPage(p => Math.min(totalPages, p + 1)); window.scrollTo(0,0) }}
+              disabled={safePage === totalPages}
+              className="px-3 py-1.5 rounded-lg text-xs border transition-all disabled:opacity-20 disabled:cursor-not-allowed border-white/[0.07] text-slate-400 hover:bg-white/[0.05] hover:text-white">
+              Next →
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        {!loading && pageItems.length > 0 && (
+          <div className="mt-4 text-center text-xs text-slate-700">
+            {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, filtered.length)} of {filtered.length} artists · Signals: streaming · press · sentiment · brand · radio
+          </div>
         )}
       </div>
     </div>
