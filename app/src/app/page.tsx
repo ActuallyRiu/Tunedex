@@ -48,7 +48,7 @@ function DeltaBadge({ value, label }: { value: number | null; label: string }) {
   const up = value > 0.05
   const dn = value < -0.05
   const colour = dn ? 'text-rose-400' : up ? 'text-emerald-400' : 'text-slate-500'
-  const bg     = dn ? 'bg-rose-500/10 border-rose-500/20' : up ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-800 border-slate-700'
+  const bg = dn ? 'bg-rose-500/10 border-rose-500/20' : up ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-800 border-slate-700'
   return (
     <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${bg} ${colour}`}>
       {up && <span className="text-[9px]">▲</span>}
@@ -59,51 +59,56 @@ function DeltaBadge({ value, label }: { value: number | null; label: string }) {
   )
 }
 
+async function fetchArtists(): Promise<Artist[]> {
+  const H = { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY }
+  const now    = new Date()
+  const ago24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+  const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
+
+  const res = await fetch(
+    SUPA_URL + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=250',
+    { headers: H }
+  )
+  const raw: Artist[] = await res.json()
+  if (!raw?.length) return []
+
+  const ids = raw.map(a => a.id).join(',')
+
+  const [h24, h1] = await Promise.all([
+    fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&artist_id=in.(' + ids + ')&scored_at=gte.' + ago24h + '&order=scored_at.asc&limit=2000', { headers: H }).then(r => r.json()),
+    fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&artist_id=in.(' + ids + ')&scored_at=gte.' + ago1h  + '&order=scored_at.asc&limit=2000', { headers: H }).then(r => r.json()),
+  ])
+
+  const first24: Record<string, number> = {}
+  const first1:  Record<string, number> = {}
+  for (const r of (h24 || [])) if (!first24[r.artist_id]) first24[r.artist_id] = r.final_score
+  for (const r of (h1  || [])) if (!first1[r.artist_id])  first1[r.artist_id]  = r.final_score
+
+  return raw.map((a, i) => {
+    const p24 = first24[a.id]
+    const p1  = first1[a.id]
+    return {
+      ...a,
+      rank: i + 1,
+      delta_24h: p24 > 0 ? parseFloat(((a.heat_score - p24) / p24 * 100).toFixed(1)) : null,
+      delta_1h:  p1  > 0 ? parseFloat(((a.heat_score - p1)  / p1  * 100).toFixed(1)) : null,
+    }
+  })
+}
+
 export default function Home() {
-  const [artists, setArtists]     = useState<Artist[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [search, setSearch]       = useState('')
-  const [stageFilter, setStage]   = useState('all')
-  const [labelFilter, setLabel]   = useState('all')
-  const [sortBy, setSort]         = useState<'score' | 'delta_24h' | 'delta_1h' | 'name'>('score')
+  const [artists, setArtists]   = useState<Artist[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [search, setSearch]     = useState('')
+  const [stageFilter, setStage] = useState('all')
+  const [labelFilter, setLabel] = useState('all')
+  const [sortBy, setSort]       = useState<'score' | 'delta_24h' | 'delta_1h' | 'name'>('score')
 
   useEffect(() => {
     async function load() {
-      const now    = new Date()
-      const ago24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
-      const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
-
-      const res = await fetch(
-        SUPA_URL + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&gt=heat_score=0&order=heat_score.desc&limit=250',
-        { headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY } }
-      )
-      const raw: Artist[] = await res.json()
-      if (!raw?.length) { setLoading(false); return }
-
-      const ids = raw.map(a => a.id).join(',')
-
-      const [h24, h1] = await Promise.all([
-        fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&in=artist_id=(' + ids + ')&gte=scored_at=' + ago24h + '&order=scored_at.asc', { headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY } }).then(r => r.json()),
-        fetch(SUPA_URL + '/rest/v1/artist_heat_history?select=artist_id,final_score&in=artist_id=(' + ids + ')&gte=scored_at=' + ago1h  + '&order=scored_at.asc', { headers: { apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY } }).then(r => r.json()),
-      ])
-
-      const first24: Record<string,number> = {}
-      const first1:  Record<string,number> = {}
-      for (const r of (h24 || [])) if (!first24[r.artist_id]) first24[r.artist_id] = r.final_score
-      for (const r of (h1  || [])) if (!first1[r.artist_id])  first1[r.artist_id]  = r.final_score
-
-      const enriched = raw.map((a, i) => {
-        const p24 = first24[a.id]
-        const p1  = first1[a.id]
-        return {
-          ...a,
-          rank: i + 1,
-          delta_24h: p24 > 0 ? parseFloat(((a.heat_score - p24) / p24 * 100).toFixed(1)) : null,
-          delta_1h:  p1  > 0 ? parseFloat(((a.heat_score - p1)  / p1  * 100).toFixed(1)) : null,
-        }
-      })
-
-      setArtists(enriched)
+      setLoading(true)
+      const data = await fetchArtists()
+      setArtists(data)
       setLoading(false)
     }
     load()
@@ -119,9 +124,9 @@ export default function Home() {
     }
     if (stageFilter !== 'all') list = list.filter(a => a.career_stage === stageFilter)
     if (labelFilter !== 'all') list = list.filter(a => a.heat_label === labelFilter)
-    if (sortBy === 'delta_24h') list.sort((a,b) => (b.delta_24h ?? -999) - (a.delta_24h ?? -999))
-    if (sortBy === 'delta_1h')  list.sort((a,b) => (b.delta_1h  ?? -999) - (a.delta_1h  ?? -999))
-    if (sortBy === 'name')      list.sort((a,b) => a.name.localeCompare(b.name))
+    if (sortBy === 'delta_24h') list.sort((a, b) => (b.delta_24h ?? -999) - (a.delta_24h ?? -999))
+    if (sortBy === 'delta_1h')  list.sort((a, b) => (b.delta_1h  ?? -999) - (a.delta_1h  ?? -999))
+    if (sortBy === 'name')      list.sort((a, b) => a.name.localeCompare(b.name))
     return list
   }, [artists, search, stageFilter, labelFilter, sortBy])
 
@@ -129,7 +134,6 @@ export default function Home() {
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-8">
 
-        {/* Header */}
         <div className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">
@@ -137,12 +141,13 @@ export default function Home() {
             </h1>
             <p className="text-slate-500 mt-1 text-sm">
               {loading ? 'Loading…' : `${artists.length} artists · ${filtered.length} shown`}
-              {artists[0]?.last_scored_at && !loading && <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>}
+              {!loading && artists[0]?.last_scored_at && (
+                <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>
+              )}
             </p>
           </div>
         </div>
 
-        {/* Search */}
         <div className="relative mb-3">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
           <input
@@ -150,28 +155,24 @@ export default function Home() {
             placeholder="Search artists…"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all"
+            className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all"
           />
           {search && (
-            <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>
+            <button onClick={() => setSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>
           )}
         </div>
 
-        {/* Filters row */}
-        <div className="flex gap-2 mb-3 flex-wrap">
-          {/* Stage filter */}
-          <div className="flex gap-1 flex-wrap">
-            {STAGES.map(s => (
-              <button key={s} onClick={() => setStage(s)}
-                className={`text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ${stageFilter === s ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10'}`}>
-                {s === 'all' ? 'All stages' : s}
-              </button>
-            ))}
-          </div>
+        <div className="flex gap-1 mb-2 flex-wrap">
+          {STAGES.map(s => (
+            <button key={s} onClick={() => setStage(s)}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border font-medium transition-all ${stageFilter === s ? 'bg-white/10 border-white/20 text-white' : 'border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/10'}`}>
+              {s === 'all' ? 'All stages' : s}
+            </button>
+          ))}
         </div>
 
-        {/* Heat label filter + sort row */}
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
           <div className="flex gap-1 flex-wrap">
             {LABELS.map(l => (
               <button key={l} onClick={() => setLabel(l)}
@@ -189,7 +190,6 @@ export default function Home() {
           </select>
         </div>
 
-        {/* Column headers */}
         <div className="grid grid-cols-[28px_14px_1fr_auto] gap-3 px-3 mb-2 text-[10px] text-slate-600 uppercase tracking-widest">
           <span className="text-right">#</span>
           <span></span>
@@ -197,27 +197,27 @@ export default function Home() {
           <span className="text-right">Score</span>
         </div>
 
-        {/* Results */}
         {loading ? (
           <div className="space-y-1">
-            {[...Array(8)].map((_,i) => (
+            {[...Array(10)].map((_, i) => (
               <div key={i} className="h-14 rounded-xl bg-white/[0.03] border border-white/[0.04] animate-pulse" />
             ))}
           </div>
         ) : filtered.length === 0 ? (
           <div className="py-16 text-center">
-            <div className="text-slate-500 text-sm">No artists match your search</div>
+            <div className="text-slate-500 text-sm">No artists match</div>
             <button onClick={() => { setSearch(''); setStage('all'); setLabel('all') }}
-              className="mt-3 text-xs text-emerald-400 hover:text-emerald-300">Clear filters</button>
+              className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 transition-colors">Clear all filters</button>
           </div>
         ) : (
           <div className="space-y-1">
-            {filtered.map((a) => (
-              <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
+            {filtered.map(a => (
+              <div key={a.id}
+                className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
                 <span className="text-xs font-bold">
                   {a.delta_24h === null ? <span className="text-slate-700">—</span>
-                    : a.delta_24h > 0.05 ? <span className="text-emerald-400">▲</span>
+                    : a.delta_24h >  0.05 ? <span className="text-emerald-400">▲</span>
                     : a.delta_24h < -0.05 ? <span className="text-rose-400">▼</span>
                     : <span className="text-slate-600">—</span>}
                 </span>
@@ -240,8 +240,8 @@ export default function Home() {
           </div>
         )}
 
-        {filtered.length > 0 && (
-          <div className="mt-4 text-center text-xs text-slate-700">
+        {!loading && filtered.length > 0 && (
+          <div className="mt-5 text-center text-xs text-slate-700">
             {filtered.length} of {artists.length} artists · Signals: streaming · press · sentiment · brand · radio
           </div>
         )}
