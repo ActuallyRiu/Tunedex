@@ -42,8 +42,8 @@ function DeltaBadge({ value, label }: { value: number | null; label: string }) {
   const sign   = up ? '+' : ''
   return (
     <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${bg} ${colour}`}>
-      {up && <span className="text-[9px]">▲</span>}
-      {down && <span className="text-[9px]">▼</span>}
+      {up && <span className="text-[9px]">â²</span>}
+      {down && <span className="text-[9px]">â¼</span>}
       {sign}{value.toFixed(1)}%
       <span className="opacity-50 ml-0.5">{label}</span>
     </span>
@@ -109,21 +109,21 @@ export default async function Home() {
               Tunedex <span className="text-emerald-400">Heat Index</span>
             </h1>
             <p className="text-slate-500 mt-1 text-sm">
-              UMG roster · {artists.length} artists · updated every 15 min
+               Â· {artists.length} artists Â· updated every 15 min
             </p>
           </div>
           <div className="text-right">
             <div className="text-xs text-slate-600">last scored</div>
             <div className="text-xs text-slate-400">
-              {artists[0]?.last_scored_at ? timeAgo(artists[0].last_scored_at) : '—'}
+              {artists[0]?.last_scored_at ? timeAgo(artists[0].last_scored_at) : 'â'}
             </div>
           </div>
         </div>
 
         <div className="flex gap-3 mb-5 text-xs text-slate-600 flex-wrap items-center">
-          <span className="flex items-center gap-1"><span className="text-emerald-400 text-[10px]">▲</span> gaining</span>
-          <span className="flex items-center gap-1"><span className="text-rose-400 text-[10px]">▼</span> falling</span>
-          <span className="ml-1">· % vs</span>
+          <span className="flex items-center gap-1"><span className="text-emerald-400 text-[10px]">â²</span> gaining</span>
+          <span className="flex items-center gap-1"><span className="text-rose-400 text-[10px]">â¼</span> falling</span>
+          <span className="ml-1">Â· % vs</span>
           <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] font-medium">1h</span>
           <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] font-medium">24h</span>
         </div>
@@ -137,7 +137,7 @@ export default async function Home() {
 
         {artists.length === 0 ? (
           <div className="text-slate-600 text-sm py-16 text-center">
-            Pipeline warming up — check back in 15 min.
+            Pipeline warming up â check back in 15 min.
           </div>
         ) : (
           <div className="space-y-1">
@@ -147,10 +147,10 @@ export default async function Home() {
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
 
                 <span className="text-xs font-bold">
-                  {a.delta_24h === null ? <span className="text-slate-700">—</span>
-                    : a.delta_24h > 0.05 ? <span className="text-emerald-400">▲</span>
-                    : a.delta_24h < -0.05 ? <span className="text-rose-400">▼</span>
-                    : <span className="text-slate-600">—</span>}
+                  {a.delta_24h === null ? <span className="text-slate-700">â</span>
+                    : a.delta_24h > 0.05 ? <span className="text-emerald-400">â²</span>
+                    : a.delta_24h < -0.05 ? <span className="text-rose-400">â¼</span>
+                    : <span className="text-slate-600">â</span>}
                 </span>
 
                 <div className="min-w-0">
@@ -179,7 +179,7 @@ export default async function Home() {
         )}
 
         <div className="mt-10 text-center text-xs text-slate-700">
-          Signals: streaming · press · sentiment · brand · radio
+          Signals: streaming Â· press Â· sentiment Â· brand Â· radio
         </div>
       </div>
     </div>
