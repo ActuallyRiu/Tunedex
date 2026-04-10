@@ -1,171 +1,203 @@
 """
-tunedex/rss_poller_v2.py
+tunedex/pipeline/rss_poller.py  — v3
 
-Extended version of the original rss_poller.py.
-Adds to the existing pipeline:
-  1. AFINN sentiment scoring on every ingested article
-  2. Artist mention extraction with entity tagging
-  3. Press signal writes to artist_press_signals
-  4. Sentiment aggregation writes to artist_sentiment_signals
-  5. Wikipedia edit stream monitoring (Layer 0 upstream source)
-
-Runs every 90 seconds on Railway (same cadence as original).
-Requires: afinn, praw, wikipedia-api packages in addition to existing deps.
-
-New env vars:
-  REDDIT_CLIENT_ID
-  REDDIT_CLIENT_SECRET
-  REDDIT_USER_AGENT
-  X_BEARER_TOKEN         (for filtered stream, $100/mo Basic tier)
-  WIKI_EDIT_STREAM_URL   (default: https://stream.wikimedia.org/v2/stream/recentchange)
+Fixes vs v2:
+  1. Persistent while-True loop — Railway keeps it alive (not COMPLETED)
+  2. Reddit is fully optional — RSS runs without credentials
+  3. Writes raw articles to the articles table first
+  4. Press + sentiment signals written after article ingestion
+  5. Artist names refreshed every cycle — new additions picked up automatically
+  6. Graceful per-feed error handling — one bad feed doesn't kill the worker
 """
 
-import os
-import re
-import logging
-import time
-import json
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+import os, re, time, logging, hashlib
+from datetime import datetime, timezone
 
 import feedparser
-import httpx
-from afinn import Afinn
 from supabase import create_client, Client
 
-log = logging.getLogger("rss_poller_v2")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("rss_poller")
 
 SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"]
+POLL_INTERVAL        = int(os.environ.get("POLL_INTERVAL_SECONDS", 90))
+
 REDDIT_CLIENT_ID     = os.environ.get("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET")
 REDDIT_USER_AGENT    = os.environ.get("REDDIT_USER_AGENT", "tunedex/1.0")
-X_BEARER_TOKEN       = os.environ.get("X_BEARER_TOKEN")
+REDDIT_ENABLED       = bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET)
 
-CONTROVERSY_THRESHOLD = 50
-AFINN_WINDOW_HOURS    = 168
-
-afinn = Afinn(language="en")
-
-PUBLICATION_TIERS = {
-    "pitchfork.com": 1, "rollingstone.com": 1, "nme.com": 1,
-    "stereogum.com": 2, "consequence.net": 2, "pastemagazine.com": 2,
-    "pigeonandplanes.com": 2, "ones2watch.com": 2,
-    "lyricallemonade.com": 3, "musicconnection.com": 3,
-}
-
-MUSIC_SUBREDDITS = [
-    "hiphopheads", "indieheads", "rnb", "popheads",
-    "afrobeats", "electronicmusic", "worldmusic",
+FEEDS = [
+    "https://www.billboard.com/feed/",
+    "https://pitchfork.com/rss/news/",
+    "https://www.rollingstone.com/music/music-news/feed/",
+    "https://consequence.net/feed/",
+    "https://www.nme.com/feed",
+    "https://www.hotnewhiphop.com/rss.xml",
+    "https://hiphopdx.com/rss",
+    "https://www.complex.com/music/rss",
+    "https://uproxx.com/music/feed/",
+    "https://www.stereogum.com/feed/",
+    "https://www.spin.com/feed/",
+    "https://www.thefader.com/rss",
+    "https://djbooth.net/feed",
+    "https://okayplayer.com/feed",
+    "https://www.xxlmag.com/feed/",
+    "https://www.theguardian.com/music/rss",
+    "https://variety.com/v/music/feed/",
 ]
 
+SUBREDDITS = [
+    "hiphopheads", "popheads", "indieheads", "rnb",
+    "afrobeats", "electronicmusic", "worldmusic", "trap",
+    "rap", "ukhiphopheads",
+]
 
-def extract_artists_from_text(text, known_artists):
-    matches = []
+POSITIVE = {"fire","heat","banger","slap","goat","legend","iconic","amazing",
+            "brilliant","masterpiece","love","best","incredible","perfect",
+            "outstanding","excellent","great","hot","lit","vibe"}
+NEGATIVE = {"trash","mid","flop","disappointing","boring","mediocre","overrated",
+            "bad","worst","terrible","awful","skip","weak","dead","irrelevant"}
+
+def quick_sentiment(text: str) -> float:
+    words = set(re.findall(r"\b\w+\b", text.lower()))
+    pos = len(words & POSITIVE)
+    neg = len(words & NEGATIVE)
+    total = pos + neg
+    if total == 0:
+        return 0.0
+    return round((pos - neg) / total, 3)
+
+def extract_mentions(text: str, artist_names: list) -> list:
     text_lower = text.lower()
-    for artist in known_artists:
-        name = artist["name"].lower()
-        count = len(re.findall(r'\b' + re.escape(name) + r'\b', text_lower))
-        if count > 0:
-            matches.append({"artist_id": artist["id"], "artist_name": artist["name"], "mention_count": count})
-    return matches
+    return [n for n in artist_names if n.lower() in text_lower]
 
+def uid(url: str, title: str) -> str:
+    return hashlib.md5(f"{url}|{title}".encode()).hexdigest()
 
-def score_text_afinn(text):
-    if not text or len(text.strip()) < 10: return 0.0
-    score = afinn.score(text)
-    words = len([w for w in text.split() if w.strip()])
-    return round(score / words, 3) if words else 0.0
+def fetch_rss(db: Client, artist_names: list) -> int:
+    total = 0
+    for feed_url in FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:20]:
+                title   = entry.get("title", "").strip()
+                url     = entry.get("link", "").strip()
+                summary = entry.get("summary", "")
+                if not title or not url:
+                    continue
 
+                article_id = uid(url, title)
+                now        = datetime.now(timezone.utc).isoformat()
 
-def upsert_press_signal(db, artist_id, tier, afinn_score, now):
-    ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    ex = (db.table("artist_press_signals").select("*").eq("artist_id", artist_id).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
-    if ex:
-        row = ex[0]; n = (row.get("article_count_7d") or 0) + 1
-        avg = round((float(row.get("press_afinn_avg") or 0) * (n - 1) + afinn) / n, 3)
-        u = {"article_count_7d": n, "press_afinn_avg": avg}
-        if tier == 1: u["tier1_count_7d"] = (row.get("tier1_count_7d") or 0) + 1
-        elif tier == 2: u["tier2_count_7d"] = (row.get("tier2_count_7d") or 0) + 1
-        else: u["tier3_count_7d"] = (row.get("tier3_count_7d") or 0) + 1
-        db.table("artist_press_signals").update(u).eq("id", row["id"]).execute()
-    else:
-        db.table("artist_press_signals").insert({"artist_id": artist_id, "captured_at": now.isoformat(), "article_count_7d": 1, "tier1_count_7d": 1 if tier == 1 else 0, "tier2_count_7d": 1 if tier == 2 else 0, "tier3_count_7d": 1 if tier == 3 else 0, "press_afinn_avg": afinn_score}).execute()
+                # Write article
+                try:
+                    db.table("articles").upsert({
+                        "id":          article_id,
+                        "title":       title,
+                        "url":         url,
+                        "body":        summary[:2000],
+                        "source":      feed.feed.get("title", feed_url),
+                        "published_at": now,
+                    }, on_conflict="id").execute()
+                except Exception as e:
+                    log.warning(f"article upsert failed: {e}")
+                    continue
 
+                # Find artist mentions
+                text    = f"{title} {summary}"
+                mentioned = extract_mentions(text, artist_names)
+                if not mentioned:
+                    continue
 
-def aggregate_sentiment(db, artist_id, new_afinn, source, now):
-    ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    ex = (db.table("artist_sentiment_signals").select("*").eq("artist_id", artist_id).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
-    if ex:
-        row = ex[0]; on = row.get("afinn_sample_size") or 0; oa = float(row.get("afinn_avg") or 0)
-        nn = on + 1; na = round((oa * on + new_afinn) / nn, 3)
-        mc = (row.get("mention_count_7d") or 0) + 1; ic = (na < 0 and mc >= 50)
-        db.table("artist_sentiment_signals").update({"afinn_avg": na, "afinn_sample_size": nn, "mention_count_7d": mc, "is_controversy": ic}).eq("id", row["id"]).execute()
-    else:
-        db.table("artist_sentiment_signals").insert({"artist_id": artist_id, "captured_at": now.isoformat(), "afinn_avg": new_afinn, "afinn_sample_size": 1, "mention_count_7d": 1, "is_controversy": new_afinn < 0}).execute()
+                sentiment = quick_sentiment(text)
 
+                for artist_name in mentioned:
+                    rows = db.table("artists").select("id").eq("name", artist_name).limit(1).execute().data
+                    if not rows:
+                        continue
+                    artist_id = rows[0]["id"]
+                    try:
+                        db.table("artist_press_signals").insert({
+                            "artist_id":       artist_id,
+                            "article_id":      article_id,
+                            "captured_at":     now,
+                            "sentiment_score": sentiment,
+                            "source":          "rss",
+                        }).execute()
+                        total += 1
+                        log.info(f"  press signal: {artist_name} ({feed.feed.get('title', feed_url)})")
+                    except Exception as e:
+                        log.warning(f"press signal failed {artist_name}: {e}")
+        except Exception as e:
+            log.warning(f"Feed error {feed_url}: {e}")
+    return total
 
-def process_article(db, article, known_artists, source_domain):
-    from datetime import datetime, timezone
-    text = f"{article.get('title', '')} {article.get('summary', '')}"
-    afinn_score = score_text_afinn(text); tier = PUBLICATION_TIERS.get(source_domain, 3); now = datetime.now(timezone.utc)
-    for m in extract_artists_from_text(text, known_artists):
-        aid = m["artist_id"]
-        upsert_press_signal(db, aid, tier, afinn_score, now)
-        aggregate_sentiment(db, aid, afinn_score, "press", now)
-        db.table("artist_mentions").insert({"artist_id": aid, "source": source_domain, "mention_type": "article", "afinn_score": afinn_score, "mention_count": m["mention_count"], "captured_at": now.isoformat()}).execute()
-
-
-def poll_reddit(db, known_artists):
-    import praw, logging
-    log = logging.getLogger("rss_poller_v2")
-    if not REDDIT_CLIENT_ID: return
+def fetch_reddit(db: Client, artist_names: list) -> int:
+    if not REDDIT_ENABLED:
+        return 0
     try:
-        from datetime import datetime, timezone
-        reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID, client_secret=REDDITCLIENT_SECRET, user_agent=REDDIT_USER_AGENT)
-        now = datetime.now(timezone.utc)
-        for s in MUSIC_SUBREDDITS:
-            for p in reddit.subreddit(s).new(limit=25):
-                t = p.title + " " + p.selftext
-                for m in extract_artists_from_text(t, known_artists):
-                    aggregate_sentiment(db, m["artist_id"], score_text_afinn(t), "reddit", now)
-    except Exception as e: log.warning(f"Reddit: {e}")
+        import praw
+        reddit = praw.Reddit(
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_CLIENT_SECRET,
+            user_agent=REDDIT_USER_AGENT,
+            read_only=True,
+        )
+        total = 0
+        for sub_name in SUBREDDITS:
+            try:
+                for post in reddit.subreddit(sub_name).new(limit=25):
+                    text      = f"{post.title} {post.selftext}"
+                    mentioned = extract_mentions(text, artist_names)
+                    if not mentioned:
+                        continue
+                    sentiment = quick_sentiment(text)
+                    now       = datetime.now(timezone.utc).isoformat()
+                    for artist_name in mentioned:
+                        rows = db.table("artists").select("id").eq("name", artist_name).limit(1).execute().data
+                        if not rows:
+                            continue
+                        artist_id = rows[0]["id"]
+                        try:
+                            db.table("artist_sentiment_signals").insert({
+                                "artist_id":        artist_id,
+                                "captured_at":      now,
+                                "afinn_avg":        sentiment,
+                                "afinn_sample_size": 1,
+                                "mention_count_7d": 1,
+                                "source":           f"reddit/r/{sub_name}",
+                            }).execute()
+                            total += 1
+                        except Exception as e:
+                            log.warning(f"sentiment signal failed {artist_name}: {e}")
+            except Exception as e:
+                log.warning(f"r/{sub_name} error: {e}")
+        return total
+    except Exception as e:
+        log.error(f"Reddit init failed: {e}")
+        return 0
 
-
-def poll_wikipedia_edits(db, known_artists):
-    import httpx, json, time, logging
-    from datetime import datetime, timezone
-    log = logging.getLogger("rss_poller_v2")
-    now = datetime.now(timezone.utc); dl = time.time() + 10
-    try:
-        with httpx.stream("GET", "https://stream.wikimedia.org/v2/stream/recentchange", timeout=15) as r:
-            for l in r.iter_lines():
-                if time.time() > dl: break
-                if not l.startswith("data:"): continue
-                try: e = json.loads(l[5:])
-                except: continue
-                if e.get("wiki") != "enwiki": continue
-                tit = e.get("title", "")
-                for a in known_artists:
-                    if a["name"].lower() in tit.lower():
-                        ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                        ex = (db.table("artist_brand_signals").select("id,wikipedia_edits_7d").eq("artist_id", a["id"]).gte("captured_at", ts.isoformat()).order("captured_at", desc=True).limit(1).execute()).data
-                        if ex: db.table("artist_brand_signals").update({"wikipedia_edits_7d": (ex[0].get("wikipedia_edits_7d") or 0) + 1, "wikipedia_article_exists": True}).eq("id", ex[0]["id"]).execute()
-                        else: db.table("artist_brand_signals").insert({"artist_id": a["id"], "captured_at": now.isoformat(), "wikipedia_edits_7d": 1, "wikipedia_article_exists": True}).execute()
-                        break
-    except Exception as e: log.warning(f"Wikipedia: {e}")
-
-
-def run_extended_pipeline():
+def run():
     db = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    known = (db.table("artists").select("id,name").execute()).data
-    log.info(f"Extended pipeline: {len(known)} artists")
-    poll_reddit(db, known)
-    poll_wikipedia_edits(db, known)
-    log.info("Extended pipeline complete.")
+    log.info(f"RSS poller v3 starting | interval={POLL_INTERVAL}s | reddit={'on' if REDDIT_ENABLED else 'off — waiting for credentials'}")
 
+    while True:
+        try:
+            rows         = db.table("artists").select("name").limit(2000).execute().data
+            artist_names = [r["name"] for r in rows]
+            log.info(f"Cycle start — {len(artist_names)} artists loaded")
+
+            press_hits   = fetch_rss(db, artist_names)
+            reddit_hits  = fetch_reddit(db, artist_names)
+
+            log.info(f"Cycle done — press: {press_hits} | sentiment: {reddit_hits}")
+        except Exception as e:
+            log.error(f"Cycle failed: {e}", exc_info=True)
+
+        log.info(f"Sleeping {POLL_INTERVAL}s")
+        time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    run_extended_pipeline()
+    run()
