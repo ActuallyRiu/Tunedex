@@ -66,7 +66,7 @@ async function fetchArtists(): Promise<Artist[]> {
   const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
 
   const res = await fetch(
-    SUPA_URL + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=250',
+    SUPA_URL + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=1000',
     { headers: H }
   )
   const raw: Artist[] = await res.json()
@@ -137,17 +137,17 @@ export default function Home() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Tunedex <span className="text-emerald-400">Heat Index</span></h1>
             <p className="text-slate-500 mt-1 text-sm">
-              {loading ? 'Loading…' : artists.length + ' artists · ' + filtered.length + ' shown'}
-              {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>}
+              {loading ? 'Loadingâ¦' : artists.length + ' artists Â· ' + filtered.length + ' shown'}
+              {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">Â· scored {timeAgo(artists[0].last_scored_at)}</span>}
             </p>
           </div>
         </div>
 
         <div className="relative mb-3">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">&#x1F50D;</span>
-          <input type="text" placeholder="Search artists…" value={search} onChange={e => setSearch(e.target.value)}
+          <input type="text" placeholder="Search artistsâ¦" value={search} onChange={e => setSearch(e.target.value)}
             className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
-          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>}
+          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">â</button>}
         </div>
 
         <div className="flex gap-1 mb-2 flex-wrap">
@@ -173,7 +173,7 @@ export default function Home() {
             <option value="score">Sort: Score</option>
             <option value="delta_24h">Sort: 24h change</option>
             <option value="delta_1h">Sort: 1h change</option>
-            <option value="name">Sort: A–Z</option>
+            <option value="name">Sort: AâZ</option>
           </select>
         </div>
 
@@ -194,7 +194,7 @@ export default function Home() {
               <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
                 <span className="text-xs font-bold">
-                  {a.delta_24h === null ? <span className="text-slate-700">—</span> : a.delta_24h > 0.05 ? <span className="text-emerald-400">&#x25b2;</span> : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span> : <span className="text-slate-600">—</span>}
+                  {a.delta_24h === null ? <span className="text-slate-700">â</span> : a.delta_24h > 0.05 ? <span className="text-emerald-400">&#x25b2;</span> : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span> : <span className="text-slate-600">â</span>}
                 </span>
                 <div className="min-w-0">
                   <div className="font-medium text-sm leading-snug truncate">{a.name}</div>
@@ -213,7 +213,7 @@ export default function Home() {
           </div>
         )}
         {!loading && filtered.length > 0 && (
-          <div className="mt-5 text-center text-xs text-slate-700">{filtered.length} of {artists.length} artists · Signals: streaming · press · sentiment · brand · radio</div>
+          <div className="mt-5 text-center text-xs text-slate-700">{filtered.length} of {artists.length} artists Â· Signals: streaming Â· press Â· sentiment Â· brand Â· radio</div>
         )}
       </div>
     </div>
