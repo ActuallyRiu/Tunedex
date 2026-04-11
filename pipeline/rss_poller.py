@@ -1,15 +1,15 @@
 """
-tunedex/pipeline/rss_poller.py Ã¢ÂÂ v4
+tunedex/pipeline/rss_poller.py ÃÂ¢ÃÂÃÂ v4
 
 Writes to correct schema:
-  articles            Ã¢ÂÂ source_name, url, title, body, published_at, sentiment, content_hash
-  artist_mentions     Ã¢ÂÂ artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
-  artist_press_signals  Ã¢ÂÂ artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
-  artist_sentiment_signals Ã¢ÂÂ artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
+  articles            ÃÂ¢ÃÂÃÂ source_name, url, title, body, published_at, sentiment, content_hash
+  artist_mentions     ÃÂ¢ÃÂÃÂ artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
+  artist_press_signals  ÃÂ¢ÃÂÃÂ artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
+  artist_sentiment_signals ÃÂ¢ÃÂÃÂ artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
 
 Sources are read from the `sources` table (already seeded with Billboard, Rolling Stone etc.)
-Reddit optional Ã¢ÂÂ activates when REDDIT_CLIENT_ID/SECRET are set.
-Persistent while-True loop Ã¢ÂÂ never exits.
+Reddit optional ÃÂ¢ÃÂÃÂ activates when REDDIT_CLIENT_ID/SECRET are set.
+Persistent while-True loop ÃÂ¢ÃÂÃÂ never exits.
 """
 
 import os, re, time, logging, hashlib
@@ -17,7 +17,24 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
 import feedparser
+import httpx
 from supabase import create_client, Client
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; Tunedex/1.0; +https://tunedex.vercel.app)",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+def fetch_feed(url: str) -> feedparser.FeedParserDict:
+    """Fetch RSS with proper headers and timeout, fallback to feedparser direct."""
+    try:
+        resp = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
+        if resp.status_code == 200:
+            return feedparser.parse(resp.text)
+    except Exception as e:
+        log.warning(f"httpx fetch failed {url}: {e}")
+    # Fallback
+    return feedparser.parse(url)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("rss_poller")
@@ -110,7 +127,7 @@ def poll_rss(db: Client, sources: list, artist_index: dict) -> dict:
         feed_url = source["rss_url"]
         source_name = source["name"]
         try:
-            feed = feedparser.parse(feed_url)
+            feed = fetch_feed(feed_url)
             entries = feed.entries[:25]
             log.info(f"  {source_name}: {len(entries)} entries")
 
@@ -228,10 +245,10 @@ def run():
             sources      = load_sources(db)
             artist_index = load_artists(db)
 
-            log.info(f"Cycle start Ã¢ÂÂ {len(sources)} sources | {len(artist_index)} artists")
+            log.info(f"Cycle start ÃÂ¢ÃÂÃÂ {len(sources)} sources | {len(artist_index)} artists")
 
             if first_run:
-                log.info("First run Ã¢ÂÂ running backfill of available feed entries...")
+                log.info("First run ÃÂ¢ÃÂÃÂ running backfill of available feed entries...")
                 first_run = False
 
             poll_rss(db, sources, artist_index)
