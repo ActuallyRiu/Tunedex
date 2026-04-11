@@ -73,7 +73,7 @@ type ArtistSignal = {
 export async function GET() {
   // Load sources from DB — get prestige weight and derive tier
   const sourcesRaw: Array<{name: string; prestige_weight: number; rss_url: string}> =
-    await fetch(BASE + '/sources?select=name,prestige_weight,rss_url&eq.active=true', { headers: SH })
+    await fetch(BASE + '/sources?select=name,prestige_weight,rss_url&active=eq.true', { headers: SH })
       .then(r => r.json()).catch(() => [])
 
   // Build source lookup: name -> { prestige, tier }
