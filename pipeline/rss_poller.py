@@ -1,15 +1,15 @@
 """
-tunedex/pipeline/rss_poller.py â v4
+tunedex/pipeline/rss_poller.py Ã¢ÂÂ v4
 
 Writes to correct schema:
-  articles            â source_name, url, title, body, published_at, sentiment, content_hash
-  artist_mentions     â artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
-  artist_press_signals  â artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
-  artist_sentiment_signals â artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
+  articles            Ã¢ÂÂ source_name, url, title, body, published_at, sentiment, content_hash
+  artist_mentions     Ã¢ÂÂ artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
+  artist_press_signals  Ã¢ÂÂ artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
+  artist_sentiment_signals Ã¢ÂÂ artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
 
 Sources are read from the `sources` table (already seeded with Billboard, Rolling Stone etc.)
-Reddit optional â activates when REDDIT_CLIENT_ID/SECRET are set.
-Persistent while-True loop â never exits.
+Reddit optional Ã¢ÂÂ activates when REDDIT_CLIENT_ID/SECRET are set.
+Persistent while-True loop Ã¢ÂÂ never exits.
 """
 
 import os, re, time, logging, hashlib
@@ -129,16 +129,17 @@ def poll_rss(db: Client, sources: list, artist_index: dict) -> dict:
                 # Write article
                 article_id = chash
                 try:
-                    db.table("articles").upsert({
-                        "id":           article_id,
+                    result = db.table("articles").upsert({
                         "source_name":  source_name,
                         "original_url": url,
                         "title":        title,
                         "body":         body[:3000],
                         "published_at": now,
-                        "sentiment":    score,
                         "content_hash": chash,
-                    }, on_conflict="id").execute()
+                    }, on_conflict="content_hash").execute()
+                    # Use returned id for linking mentions
+                    if result.data:
+                        article_id = result.data[0]["id"]
                     total_articles += 1
                 except Exception as e:
                     log.warning(f"article upsert failed: {e}")
@@ -227,10 +228,10 @@ def run():
             sources      = load_sources(db)
             artist_index = load_artists(db)
 
-            log.info(f"Cycle start â {len(sources)} sources | {len(artist_index)} artists")
+            log.info(f"Cycle start Ã¢ÂÂ {len(sources)} sources | {len(artist_index)} artists")
 
             if first_run:
-                log.info("First run â running backfill of available feed entries...")
+                log.info("First run Ã¢ÂÂ running backfill of available feed entries...")
                 first_run = False
 
             poll_rss(db, sources, artist_index)
