@@ -92,12 +92,12 @@ export async function GET() {
         const s    = afinn(text)
         const hash = md5(url + title)
 
-        const { data: art } = await db.from('articles')
-          .upsert(
-            { source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash },
-            { onConflict: 'content_hash' }
-          )
-          .select('id').single()
+        // Upsert, then always fetch id (upsert may return null on conflict)
+        await db.from('articles').upsert(
+          { source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash },
+          { onConflict: 'content_hash', ignoreDuplicates: false }
+        )
+        const { data: art } = await db.from('articles').select('id').eq('content_hash', hash).single()
 
         if (!art?.id) continue
         arts++
