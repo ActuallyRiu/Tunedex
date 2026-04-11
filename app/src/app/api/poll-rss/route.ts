@@ -22,73 +22,47 @@ const FEEDS = [
   { name: 'DJBooth',        url: 'https://djbooth.net/feed' },
 ]
 
-const POSITIVE = new Set(['fire','heat','banger','slap','goat','legend','iconic','amazing',
-  'brilliant','masterpiece','love','best','incredible','perfect','outstanding','excellent',
-  'great','hot','lit','vibe','classic','underrated','essential','historic','groundbreaking'])
-const NEGATIVE = new Set(['trash','mid','flop','disappointing','boring','mediocre','overrated',
+const POSS = new Set(['fire','heat','banger','slap','goat','legend','iconic','amazing','brilliant',
+  'masterpiece','love','best','incredible','perfect','outstanding','excellent','great','hot',
+  'lit','vibe','classic','underrated','essential','historic','groundbreaking'])
+const NEGS = new Set(['trash','mid','flop','disappointing','boring','mediocre','overrated',
   'bad','worst','terrible','awful','skip','weak','dead','irrelevant','garbage','derivative'])
 
-function afinnScore(text: string): number {
-  const words = text.toLowerCase().match(/w+/g) ?? []
-  const pos = words.filter(w => POSITIVE.has(w)).length
-  const neg = words.filter(w => NEGATIVE.has(w)).length
-  const total = pos + neg
-  return total === 0 ? 0 : Math.round(((pos - neg) / total) * 1000) / 1000
+function afinn(text: string): number {
+  const words = text.toLowerCase().match(/\b\w+\b/g) ?? []
+  const p = words.filter(w => POSS.has(w)).length
+  const n = words.filter(w => NEGS.has(w)).length
+  return p + n === 0 ? 0 : Math.round(((p - n) / (p + n)) * 1000) / 1000
 }
 
-function hashContent(s: string): string {
+function md5(s: string): string {
   return createHash('md5').update(s).digest('hex').slice(0, 32)
 }
 
-function findMentions(text: string, index: Record<string, string>): string[] {
-  const lower = text.toLowerCase()
-  return Object.keys(index).filter(name => lower.includes(name))
+function getTag(xml: string, tag: string): string {
+  const open = xml.indexOf('<' + tag)
+  if (open === -1) return ''
+  const close = xml.indexOf('</' + tag + '>', open)
+  if (close === -1) return ''
+  const inner = xml.slice(xml.indexOf('>', open) + 1, close)
+  return inner.replace('<![CDATAY€{', '').replace(']]>', '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim()
 }
 
-function parseItems(xml: string): Array<{ title: string; url: string; body: string }> {
-  const items: Array<{ title: string; url: string; body: string }> = []
-  // Split on <item> tags without regex to avoid escape issues
+function parseItems(xml: string) {
+  const out: Array<{title: string; url: string; body: string}> = []
   const parts = xml.split('<item')
-  for (let i = 1; i < parts.length && items.length < 25; i++) {
-    const endIdx = parts[i].indexOf('</item>')
-    const chunk = endIdx > -1 ? parts[i].slice(0, endIdx) : parts[i]
-
-    // Extract title
-    const ts = chunk.indexOf('<title')
-    const te = chunk.indexOf('</title>', ts)
-    let title = ts > -1 && te > -1 ? chunk.slice(ts, te) : ''
-    title = title.replace(/<title[^>]*>/i, '').replace('<![CDATA[', '').replace(']]>', '')
-      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').trim()
-
-    // Extract URL from <link> or <guid>
-    let url = ''
-    const ls = chunk.indexOf('<link>')
-    const le = chunk.indexOf('</link>', ls)
-    if (ls > -1 && le > -1) {
-      url = chunk.slice(ls + 6, le).trim()
-    }
-    if (!url || !url.startsWith('http')) {
-      const gs = chunk.indexOf('<guid')
-      const ge = chunk.indexOf('</guid>', gs)
-      if (gs > -1 && ge > -1) {
-        const inner = chunk.slice(chunk.indexOf('>', gs) + 1, ge).trim()
-        if (inner.startsWith('http')) url = inner
-      }
-    }
-
-    // Extract body from <description>
-    const ds = chunk.indexOf('<description')
-    const de = chunk.indexOf('</description>', ds)
-    let body = ds > -1 && de > -1 ? chunk.slice(chunk.indexOf('>', ds) + 1, de) : ''
-    body = body.replace('<![CDATA[', '').replace(']]>', '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-
-    if (title && url && url.startsWith('http')) {
-      items.push({ title, url, body })
-    }
+  for (let i = 1; i < parts.length && out.length < 25; i++) {
+    const end = parts[i].indexOf('</item>')
+    const chunk = end > -1 ? parts[i].slice(0, end) : parts[i]
+    const title = getTag(chunk, 'title')
+    let url = getTag(chunk, 'link')
+    if (!url || !url.startsWith('http')) url = getTag(chunk, 'guid')
+    const body = getTag(chunk, 'description').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    if (title && url && url.startsWith('http')) out.push({ title, url, body })
   }
-  return items
+  return out
 }
-
 
 export const maxDuration = 60
 
@@ -98,55 +72,57 @@ export async function GET() {
   const idx: Record<string, string> = {}
   for (const a of (rows ?? [])) idx[a.name.toLowerCase()] = a.id
 
-  let articles = 0
-  let mentions = 0
-  const scores: Record<string, number[]> = {}
-  const counts: Record<string, number> = {}
+  let arts = 0, ments = 0
+  const sc: Record<string, number[]> = {}
+  const ct: Record<string, number> = {}
 
   for (const feed of FEEDS) {
     try {
       const res = await fetch(feed.url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)', 'Accept': 'application/rss+xml, application/xml, */*' },
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)', 'Accept': 'application/rss+axml, application/xml, text/xml, */*' },
         signal: AbortSignal.timeout(8000),
       })
       if (!res.ok) { console.warn(feed.name, res.status); continue }
       const xml = await res.text()
       const items = parseItems(xml)
-      console.log(feed.name + ': ' + items.length + ' items')
+      console.log(feed.name + ': ' + items.length)
 
       for (const { title, url, body } of items) {
-        const text  = (title + ' ' + body).slice(0, 2000)
-        const score = afinnScore(text)
-        const chash = hashContent(url + title)
+        const text = (title + ' ' + body).slice(0, 2000)
+        const s    = afinn(text)
+        const hash = md5(url + title)
 
         const { data: art } = await db.from('articles')
-          .upsert({ source_name: feed.name, original_url: url, title: title.slice(0,500), body: body.slice(0,3000), published_at: new Date().toISOString(), content_hash: chash }, { onConflict: 'content_hash' })
+          .upsert({ source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash }, { onConflict: 'content_hash' })
           .select('id').single()
 
         if (!art?.id) continue
-        articles++
+        arts++
 
-        const named = findMentions(text, idx)
-        for (const name of named) {
-          const aid = idx[name]
-          try { await db.from('artist_mentions').insert({ artist_id: aid, article_id: art.id, sentiment: score, context_snippet: text.slice(0,300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() }) } catch(_e) {}
-          if (!scores[aid]) { scores[aid] = []; counts[aid] = 0 }
-          scores[aid].push(score)
-          counts[aid]++
-          mentions++
+        const lower = text.toLowerCase()
+        for (const [name, aid] of Object.entries(idx)) {
+          if (!lower.includes(name)) continue
+          try {
+            await db.from('artist_mentions').insert({ artist_id: aid, article_id: art.id, sentiment: s, context_snippet: text.slice(0, 300), afinn_score: s, mention_type: 'press', captured_at: new Date().toISOString() })
+          } catch (_e) { /* dup */ }
+          if (!sc[aid]) { sc[aid] = []; ct[aid] = 0 }
+          sc[aid].push(s)
+          ct[aid]++
+          ments++
         }
       }
-    } catch(e) { console.error(feed.name, String(e)) }
+    } catch (e) { console.error(feed.name, String(e)) }
   }
 
-  const aids = Object.keys(scores)
-  for (const aid of aids) {
-    const sc = scores[aid]
-    const ct = counts[aid]
-    const avg = sc.reduce((a,b)=>a+b,0) / sc.length
-    const ps  = Math.min((Math.log1p(ct) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
-    await db.from('artist_press_signals').upsert({ artist_id: aid, captured_at: new Date().toISOString(), article_count_7d: ct, press_afinn_avg: Math.round(avg*1000)/1000, press_score: Math.round(ps*100)/100 }, { onConflict: 'artist_id' })
+  for (const aid of Object.keys(sc)) {
+    const avg = sc[aid].reduce((a, b) => a + b, 0) / sc[aid].length
+    const ps  = Math.min(.(Math.log1p(ct[aid]) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
+    await db.from('artist_press_signals').upsert({
+      artist_id: aid, captured_at: new Date().toISOString(),
+      article_count_7d: ct[aid], press_afinn_avg: Math.round(avg * 1000) / 1000,
+      press_score: Math.round(ps * 100) / 100,
+    }, { onConflict: 'artist_id' })
   }
 
-  return NextResponse.json({ ok: true, articles, mentions, press_signals: aids.length })
+  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: Object.keys(sc).length })
 }
