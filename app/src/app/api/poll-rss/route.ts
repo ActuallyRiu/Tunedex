@@ -47,22 +47,48 @@ function findMentions(text: string, index: Record<string, string>): string[] {
 
 function parseItems(xml: string): Array<{ title: string; url: string; body: string }> {
   const items: Array<{ title: string; url: string; body: string }> = []
-  const re = new RegExp('<item[^>]*>([\s\S]*?)<\/item>', 'gi')
-  let m
-  while ((m = re.exec(xml)) !== null) {
-    const x = m[1]
-    const tm = x.match(new RegExp('<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>', 'i'))
-    const title = (tm?.[1] ?? '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').trim()
-    const um = x.match(new RegExp('<link>(https?:\/\/[^<]+)<\/link>', 'i'))
-      ?? x.match(new RegExp('<guid[^>]*>(https?:\/\/[^<]+)<\/guid>', 'i'))
-    const url = (um?.[1] ?? '').trim()
-    const bm = x.match(new RegExp('<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>', 'i'))
-    const body = (bm?.[1] ?? '').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()
-    if (title && url) items.push({ title, url, body })
-    if (items.length >= 25) break
+  // Split on <item> tags without regex to avoid escape issues
+  const parts = xml.split('<item')
+  for (let i = 1; i < parts.length && items.length < 25; i++) {
+    const endIdx = parts[i].indexOf('</item>')
+    const chunk = endIdx > -1 ? parts[i].slice(0, endIdx) : parts[i]
+
+    // Extract title
+    const ts = chunk.indexOf('<title')
+    const te = chunk.indexOf('</title>', ts)
+    let title = ts > -1 && te > -1 ? chunk.slice(ts, te) : ''
+    title = title.replace(/<title[^>]*>/i, '').replace('<![CDATA[', '').replace(']]>', '')
+      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').trim()
+
+    // Extract URL from <link> or <guid>
+    let url = ''
+    const ls = chunk.indexOf('<link>')
+    const le = chunk.indexOf('</link>', ls)
+    if (ls > -1 && le > -1) {
+      url = chunk.slice(ls + 6, le).trim()
+    }
+    if (!url || !url.startsWith('http')) {
+      const gs = chunk.indexOf('<guid')
+      const ge = chunk.indexOf('</guid>', gs)
+      if (gs > -1 && ge > -1) {
+        const inner = chunk.slice(chunk.indexOf('>', gs) + 1, ge).trim()
+        if (inner.startsWith('http')) url = inner
+      }
+    }
+
+    // Extract body from <description>
+    const ds = chunk.indexOf('<description')
+    const de = chunk.indexOf('</description>', ds)
+    let body = ds > -1 && de > -1 ? chunk.slice(chunk.indexOf('>', ds) + 1, de) : ''
+    body = body.replace('<![CDATA[', '').replace(']]>', '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+
+    if (title && url && url.startsWith('http')) {
+      items.push({ title, url, body })
+    }
   }
   return items
 }
+
 
 export const maxDuration = 60
 
