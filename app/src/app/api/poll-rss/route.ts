@@ -6,7 +6,7 @@ export const maxDuration = 60
 
 const BASE = process.env.NEXT_PUBLIC_SUPABASE_URL + '/rest/v1'
 const KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const SH   = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
+const SH: Record<string, string> = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
 
 const FEEDS = [
   { name: 'Billboard',      url: 'https://www.billboard.com/feed/' },
@@ -24,6 +24,8 @@ const FEEDS = [
 
 const PWORDS = new Set(['fire','heat','banger','slap','goat','legend','iconic','amazing','brilliant','masterpiece','love','best','incredible','perfect','outstanding','excellent','great','hot','lit','vibe','classic','underrated','essential','historic','groundbreaking'])
 const NWORDS = new Set(['trash','mid','flop','disappointing','boring','mediocre','overrated','bad','worst','terrible','awful','skip','weak','dead','irrelevant','garbage','derivative'])
+
+const MIN_NAME_LEN = 4
 
 function afinn(text: string): number {
   const words = text.toLowerCase().match(/\b\w+\b/g) ?? []
@@ -61,14 +63,25 @@ function parseItems(xml: string): Array<{ title: string; url: string; body: stri
   return out
 }
 
-export async function GET() {
-  // Load artists once
-  const artRes = await fetch(BASE + '/artists?select=id,name&limit=2000', { headers: SH })
-  const artistRows: Array<{id: string; name: string}> = await artRes.json()
-  const idx: Record<string, string> = {}
-  for (const a of artistRows) idx[a.name.toLowerCase()] = a.id
+function artistMentioned(text: string, name: string): boolean {
+  if (name.length < MIN_NAME_LEN) return false
+  try {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp('\\b' + escaped + '\\b', 'i').test(text)
+  } catch {
+    return text.toLowerCase().includes(name.toLowerCase())
+  }
+}
 
-  // Fetch ALL feeds in parallel — completes in ~4s instead of 88s sequentially
+export async function GET() {
+  // Load artists
+  const artistRows: Array<{id: string; name: string}> = await fetch(BASE + '/artists?select=id,name&limit=2000', { headers: SH }).then(r => r.json())
+  const idx: Record<string, string> = {}
+  for (const a of artistRows) {
+    if (a.name && a.name.length >= MIN_NAME_LEN) idx[a.name] = a.id
+  }
+
+  // Fetch all feeds in parallel
   const feedResults = await Promise.allSettled(
     FEEDS.map(async feed => {
       const res = await fetch(feed.url, {
@@ -84,18 +97,17 @@ export async function GET() {
   const pressScores: Record<string, number[]> = {}
   const pressCounts: Record<string, number> = {}
 
-  // Write articles + mentions for each feed result
   for (const result of feedResults) {
     if (result.status === 'rejected') { console.warn('feed failed:', result.reason); continue }
     const { feed, items } = result.value
-    console.log(feed.name + ': ' + items.length + ' items')
+    console.log(feed.name + ': ' + items.length)
 
     for (const { title, url, body } of items) {
       const text  = (title + ' ' + body).slice(0, 2000)
       const score = afinn(text)
       const hash  = md5(url + title)
 
-      // Upsert article — merge on content_hash
+      // Upsert article
       const upsRes = await fetch(BASE + '/articles?on_conflict=content_hash', {
         method: 'POST',
         headers: { ...SH, 'Prefer': 'resolution=merge-duplicates,return=representation' },
@@ -104,7 +116,6 @@ export async function GET() {
       const upsData = await upsRes.json().catch(() => [])
       let artId: string | undefined = Array.isArray(upsData) ? upsData[0]?.id : undefined
 
-      // If upsert returned nothing (duplicate), fetch existing id
       if (!artId) {
         const existing: Array<{id: string}> = await fetch(BASE + '/articles?content_hash=eq.' + hash + '&select=id', { headers: SH }).then(r => r.json()).catch(() => [])
         artId = existing[0]?.id
@@ -112,34 +123,42 @@ export async function GET() {
       if (!artId) continue
       arts++
 
-      // Find artist mentions
-      const lower = text.toLowerCase()
+      // Word-boundary artist matching
       for (const [name, aid] of Object.entries(idx)) {
-        if (!lower.includes(name)) continue
-        // Insert mention — ignore duplicate errors
+        if (!artistMentioned(text, name)) continue
         await fetch(BASE + '/artist_mentions', {
           method: 'POST',
           headers: { ...SH, 'Prefer': 'return=minimal' },
           body: JSON.stringify({ artist_id: aid, article_id: artId, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
         }).catch(() => {})
         if (!pressScores[aid]) { pressScores[aid] = []; pressCounts[aid] = 0 }
-        pressScores[aid].push(score); pressCounts[aid]++; ments++
+        pressScores[aid].push(score)
+        pressCounts[aid]++
+        ments++
       }
     }
   }
 
-  // Write press signals — plain INSERT (no unique constraint on artist_id)
-  for (const aid of Object.keys(pressScores)) {
-    const sc  = pressScores[aid]
-    const cnt = pressCounts[aid]
-    const avg = sc.reduce((a, b) => a + b, 0) / sc.length
-    const ps  = Math.min((Math.log1p(cnt) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
-    await fetch(BASE + '/artist_press_signals', {
-      method: 'POST',
-      headers: { ...SH, 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ artist_id: aid, captured_at: new Date().toISOString(), article_count_7d: cnt, press_afinn_avg: Math.round(avg * 1000) / 1000, press_score: Math.round(ps * 100) / 100 })
+  // Press signals: DELETE old rows for these artists then INSERT exactly one fresh row
+  const aids = Object.keys(pressScores)
+  if (aids.length > 0) {
+    await fetch(BASE + '/artist_press_signals?artist_id=in.(' + aids.join(',') + ')', {
+      method: 'DELETE',
+      headers: SH
     }).catch(() => {})
+
+    for (const aid of aids) {
+      const sc  = pressScores[aid]
+      const cnt = pressCounts[aid]
+      const avg = sc.reduce((a, b) => a + b, 0) / sc.length
+      const ps  = Math.min((Math.log1p(cnt) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
+      await fetch(BASE + '/artist_press_signals', {
+        method: 'POST',
+        headers: { ...SH, 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ artist_id: aid, captured_at: new Date().toISOString(), article_count_7d: cnt, press_afinn_avg: Math.round(avg * 1000) / 1000, press_score: Math.round(ps * 100) / 100 })
+      }).catch(() => {})
+    }
   }
 
-  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: Object.keys(pressScores).length })
+  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: aids.length })
 }
