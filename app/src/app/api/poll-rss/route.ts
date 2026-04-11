@@ -4,28 +4,25 @@ import { createHash } from 'crypto'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-const BASE = process.env.NEXT_PUBLIC_SUPABASE_URL + '/rest/v1'
-const KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const SH: Record<string, string> = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
+const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const KEY      = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const BASE     = SUPA_URL + '/rest/v1'
+const SH       = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
 
-const FEEDS = [
-  { name: 'Billboard',      url: 'https://www.billboard.com/feed/' },
-  { name: 'Pitchfork',      url: 'https://pitchfork.com/rss/news/' },
-  { name: 'Rolling Stone',  url: 'https://www.rollingstone.com/music/music-news/feed/' },
-  { name: 'NME',            url: 'https://www.nme.com/feed' },
-  { name: 'HotNewHipHop',   url: 'https://www.hotnewhiphop.com/rss.xml' },
-  { name: 'HipHopDX',       url: 'https://hiphopdx.com/rss' },
-  { name: 'Stereogum',      url: 'https://www.stereogum.com/feed/' },
-  { name: 'The Fader',      url: 'https://www.thefader.com/rss' },
-  { name: 'XXL',            url: 'https://www.xxlmag.com/feed/' },
-  { name: 'Guardian Music', url: 'https://www.theguardian.com/music/rss' },
-  { name: 'DJBooth',        url: 'https://djbooth.net/feed' },
-]
+// Source registry — loaded from DB at startup, defines prestige weight and tier per outlet
+// Tier 1 = prestige >= 2.5 (Billboard, Pitchfork, Rolling Stone, THR, MBW)
+// Tier 2 = prestige 1.5–2.4 (NME, Stereogum, XXL, Fader, Vibe, Complex etc)
+// Tier 3 = prestige < 1.5  (PR Newswire, Business Wire etc)
+type SourceMeta = { prestige: number; tier: 1 | 2 | 3 }
+
+function getTier(prestige: number): 1 | 2 | 3 {
+  if (prestige >= 2.5) return 1
+  if (prestige >= 1.5) return 2
+  return 3
+}
 
 const PWORDS = new Set(['fire','heat','banger','slap','goat','legend','iconic','amazing','brilliant','masterpiece','love','best','incredible','perfect','outstanding','excellent','great','hot','lit','vibe','classic','underrated','essential','historic','groundbreaking'])
 const NWORDS = new Set(['trash','mid','flop','disappointing','boring','mediocre','overrated','bad','worst','terrible','awful','skip','weak','dead','irrelevant','garbage','derivative'])
-
-const MIN_NAME_LEN = 4
 
 function afinn(text: string): number {
   const words = text.toLowerCase().match(/\b\w+\b/g) ?? []
@@ -63,27 +60,45 @@ function parseItems(xml: string): Array<{ title: string; url: string; body: stri
   return out
 }
 
-function artistMentioned(text: string, name: string): boolean {
-  if (name.length < MIN_NAME_LEN) return false
-  try {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    return new RegExp('\\b' + escaped + '\\b', 'i').test(text)
-  } catch {
-    return text.toLowerCase().includes(name.toLowerCase())
-  }
+type ArtistSignal = {
+  scores: number[]          // afinn scores per article
+  weightedScore: number     // sum of (afinn * prestige_weight) per article
+  totalWeight: number       // sum of prestige_weights
+  tier1: number             // article count from tier 1 sources
+  tier2: number             // article count from tier 2 sources
+  tier3: number             // article count from tier 3 sources
+  articleCount: number      // raw total count
 }
 
 export async function GET() {
-  // Load artists
-  const artistRows: Array<{id: string; name: string}> = await fetch(BASE + '/artists?select=id,name&limit=2000', { headers: SH }).then(r => r.json())
-  const idx: Record<string, string> = {}
-  for (const a of artistRows) {
-    if (a.name && a.name.length >= MIN_NAME_LEN) idx[a.name] = a.id
+  // Load sources from DB — get prestige weight and derive tier
+  const sourcesRaw: Array<{name: string; prestige_weight: number; rss_url: string}> =
+    await fetch(BASE + '/sources?select=name,prestige_weight,rss_url&eq.active=true', { headers: SH })
+      .then(r => r.json()).catch(() => [])
+
+  // Build source lookup: name -> { prestige, tier }
+  const sourceMeta: Record<string, SourceMeta> = {}
+  const feeds: Array<{ name: string; url: string; prestige: number; tier: 1|2|3 }> = []
+
+  for (const s of sourcesRaw) {
+    if (!s.rss_url) continue
+    const prestige = s.prestige_weight || 1.0
+    const tier = getTier(prestige)
+    sourceMeta[s.name] = { prestige, tier }
+    feeds.push({ name: s.name, url: s.rss_url, prestige, tier })
   }
+
+  console.log('Loaded ' + feeds.length + ' feeds from sources table')
+
+  // Load artists
+  const artistRows: Array<{id: string; name: string}> =
+    await fetch(BASE + '/artists?select=id,name&limit=2000', { headers: SH }).then(r => r.json())
+  const idx: Record<string, string> = {}
+  for (const a of artistRows) idx[a.name.toLowerCase()] = a.id
 
   // Fetch all feeds in parallel
   const feedResults = await Promise.allSettled(
-    FEEDS.map(async feed => {
+    feeds.map(async feed => {
       const res = await fetch(feed.url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)', 'Accept': 'application/rss+xml, */*' },
         signal: AbortSignal.timeout(5000),
@@ -94,71 +109,118 @@ export async function GET() {
   )
 
   let arts = 0, ments = 0
-  const pressScores: Record<string, number[]> = {}
-  const pressCounts: Record<string, number> = {}
+  const signals: Record<string, ArtistSignal> = {}
 
   for (const result of feedResults) {
     if (result.status === 'rejected') { console.warn('feed failed:', result.reason); continue }
     const { feed, items } = result.value
-    console.log(feed.name + ': ' + items.length)
+    console.log(feed.name + ' [prestige:' + feed.prestige + ' tier:' + feed.tier + ']: ' + items.length + ' items')
 
     for (const { title, url, body } of items) {
       const text  = (title + ' ' + body).slice(0, 2000)
       const score = afinn(text)
       const hash  = md5(url + title)
 
-      // Upsert article
+      // Upsert article with source prestige metadata
       const upsRes = await fetch(BASE + '/articles?on_conflict=content_hash', {
         method: 'POST',
         headers: { ...SH, 'Prefer': 'resolution=merge-duplicates,return=representation' },
-        body: JSON.stringify({ source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash })
+        body: JSON.stringify({
+          source_name:  feed.name,
+          original_url: url,
+          title:        title.slice(0, 500),
+          body:         body.slice(0, 3000),
+          published_at: new Date().toISOString(),
+          content_hash: hash,
+          sentiment:    score,
+        })
       })
       const upsData = await upsRes.json().catch(() => [])
       let artId: string | undefined = Array.isArray(upsData) ? upsData[0]?.id : undefined
 
       if (!artId) {
-        const existing: Array<{id: string}> = await fetch(BASE + '/articles?content_hash=eq.' + hash + '&select=id', { headers: SH }).then(r => r.json()).catch(() => [])
+        const existing: Array<{id: string}> =
+          await fetch(BASE + '/articles?content_hash=eq.' + hash + '&select=id', { headers: SH })
+            .then(r => r.json()).catch(() => [])
         artId = existing[0]?.id
       }
       if (!artId) continue
       arts++
 
-      // Word-boundary artist matching
+      // Find artist mentions
+      const lower = text.toLowerCase()
       for (const [name, aid] of Object.entries(idx)) {
-        if (!artistMentioned(text, name)) continue
+        if (!lower.includes(name)) continue
+
+        // Write mention with prestige context
         await fetch(BASE + '/artist_mentions', {
           method: 'POST',
           headers: { ...SH, 'Prefer': 'return=minimal' },
-          body: JSON.stringify({ artist_id: aid, article_id: artId, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
+          body: JSON.stringify({
+            artist_id:       aid,
+            article_id:      artId,
+            sentiment:       score,
+            context_snippet: text.slice(0, 300),
+            afinn_score:     score,
+            mention_type:    'press',
+            captured_at:     new Date().toISOString(),
+          })
         }).catch(() => {})
-        if (!pressScores[aid]) { pressScores[aid] = []; pressCounts[aid] = 0 }
-        pressScores[aid].push(score)
-        pressCounts[aid]++
+
+        // Accumulate weighted signal per artist
+        if (!signals[aid]) {
+          signals[aid] = { scores: [], weightedScore: 0, totalWeight: 0, tier1: 0, tier2: 0, tier3: 0, articleCount: 0 }
+        }
+        const sig = signals[aid]
+        sig.scores.push(score)
+        sig.weightedScore += score * feed.prestige   // prestige-weighted sentiment
+        sig.totalWeight   += feed.prestige
+        sig.articleCount  += 1
+        if      (feed.tier === 1) sig.tier1++
+        else if (feed.tier === 2) sig.tier2++
+        else                      sig.tier3++
         ments++
       }
     }
   }
 
-  // Press signals: DELETE old rows for these artists then INSERT exactly one fresh row
-  const aids = Object.keys(pressScores)
-  if (aids.length > 0) {
-    await fetch(BASE + '/artist_press_signals?artist_id=in.(' + aids.join(',') + ')', {
-      method: 'DELETE',
-      headers: SH
-    }).catch(() => {})
+  // Write press signals — one row per artist with full tier breakdown and weighted score
+  for (const [aid, sig] of Object.entries(signals)) {
+    // Weighted average sentiment (prestige-weighted)
+    const weightedAfinn = sig.totalWeight > 0
+      ? Math.round((sig.weightedScore / sig.totalWeight) * 1000) / 1000
+      : 0
 
-    for (const aid of aids) {
-      const sc  = pressScores[aid]
-      const cnt = pressCounts[aid]
-      const avg = sc.reduce((a, b) => a + b, 0) / sc.length
-      const ps  = Math.min((Math.log1p(cnt) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
-      await fetch(BASE + '/artist_press_signals', {
-        method: 'POST',
-        headers: { ...SH, 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ artist_id: aid, captured_at: new Date().toISOString(), article_count_7d: cnt, press_afinn_avg: Math.round(avg * 1000) / 1000, press_score: Math.round(ps * 100) / 100 })
-      }).catch(() => {})
-    }
+    // Press score formula:
+    // Tier 1 articles are worth 3x, Tier 2 are 1.5x, Tier 3 are 1x
+    // Then log-normalised and sentiment-boosted
+    const weightedCount = sig.tier1 * 3 + sig.tier2 * 1.5 + sig.tier3 * 1
+    const pressScore = Math.min(
+      (Math.log1p(weightedCount) / Math.log1p(50)) * (1 + weightedAfinn * 0.2) * 100,
+      100
+    )
+
+    await fetch(BASE + '/artist_press_signals', {
+      method: 'POST',
+      headers: { ...SH, 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        artist_id:        aid,
+        captured_at:      new Date().toISOString(),
+        article_count_7d: sig.articleCount,
+        tier1_count_7d:   sig.tier1,
+        tier2_count_7d:   sig.tier2,
+        tier3_count_7d:   sig.tier3,
+        press_afinn_avg:  weightedAfinn,
+        press_score:      Math.round(pressScore * 100) / 100,
+      })
+    }).catch(() => {})
   }
 
-  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: aids.length })
+  return NextResponse.json({
+    ok:            true,
+    feeds_polled:  feeds.length,
+    articles:      arts,
+    mentions:      ments,
+    press_signals: Object.keys(signals).length,
+  })
 }
