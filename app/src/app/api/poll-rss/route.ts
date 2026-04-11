@@ -92,10 +92,10 @@ export async function GET() {
         const s    = afinn(text)
         const hash = md5(url + title)
 
-        // Upsert, then always fetch id (upsert may return null on conflict)
+        // Insert article — fetch by content_hash after (handles duplicates)
         await db.from('articles').upsert(
           { source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash },
-          { onConflict: 'content_hash', ignoreDuplicates: false }
+          { onConflict: 'content_hash' }
         )
         const { data: art } = await db.from('articles').select('id').eq('content_hash', hash).single()
 
@@ -120,13 +120,13 @@ export async function GET() {
   for (const aid of Object.keys(sc)) {
     const avg = sc[aid].reduce((a, b) => a + b, 0) / sc[aid].length
     const ps  = Math.min((Math.log1p(ct[aid]) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
-    await db.from('artist_press_signals').upsert({
+    await db.from('artist_press_signals').insert({
       artist_id: aid,
       captured_at: new Date().toISOString(),
       article_count_7d: ct[aid],
       press_afinn_avg: Math.round(avg * 1000) / 1000,
       press_score: Math.round(ps * 100) / 100,
-    }, { onConflict: 'artist_id' })
+    })
   }
 
   return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: Object.keys(sc).length })
