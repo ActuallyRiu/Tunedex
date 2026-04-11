@@ -1,8 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/poll-rss",
-      "schedule": "0 * * * *"
-    }
-  ]
-}
+{}
