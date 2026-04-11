@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createHash } from 'crypto'
 
 const BASE = process.env.NEXT_PUBLIC_SUPABASE_URL + '/rest/v1'
-const KEY  = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const H    = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
 
 const FEEDS = [
