@@ -90,7 +90,16 @@ def score_with_signals(row: dict, sigs: dict, stage: str) -> dict:
     s_sent     = (float(sent.get("afinn_avg") or 0) + 1) / 2 if sent else 0.25
     s_brand    = (float(br.get("brand_base_score") or 0) / 100) if br else log_norm(ml) * 0.7
     s_radio    = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.25
-    s_press    = log_norm(int(prs.get("article_count_7d") or 0), 50) if prs else 0.25
+    # Prestige-weighted press score: tier1 articles worth 3x, tier2 1.5x, tier3 1x
+    if prs:
+        t1 = int(prs.get("tier1_count_7d") or 0)
+        t2 = int(prs.get("tier2_count_7d") or 0)
+        t3 = int(prs.get("tier3_count_7d") or 0)
+        raw = int(prs.get("article_count_7d") or 0)
+        weighted_count = t1 * 3 + t2 * 1.5 + t3 * 1 if (t1 + t2 + t3) > 0 else raw
+        s_press = log_norm(weighted_count, 50)
+    else:
+        s_press = 0.25
     brand_mult = float(br.get("brand_multiplier") or 1.0)
 
     sp  = s_stream * w["streaming"]
