@@ -41,9 +41,9 @@ function hashContent(s: string): string {
 function findMentions(text: string, artistIndex: Map<string, string>): Array<[string, string]> {
   const lower = text.toLowerCase()
   const found: Array<[string, string]> = []
-  for (const [name, id] of artistIndex) {
+  artistIndex.forEach((id, name) => {
     if (lower.includes(name)) found.push([id, name])
-  }
+  })
   return found
 }
 
@@ -120,7 +120,7 @@ export async function GET() {
     }
   }
 
-  for (const [artistId, { scores, count }] of pressMap) {
+  pressMap.forEach(({ scores, count }, artistId) => {
     const avg = scores.reduce((a, b) => a + b, 0) / scores.length
     const pressScore = Math.min((Math.log1p(count) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
     await db.from('artist_press_signals').upsert({
@@ -130,7 +130,7 @@ export async function GET() {
       press_afinn_avg: Math.round(avg * 1000) / 1000,
       press_score: Math.round(pressScore * 100) / 100,
     }, { onConflict: 'artist_id' })
-  }
+  })
 
   return NextResponse.json({ ok: true, articles: totalArticles, mentions: totalMentions, press_signals: pressMap.size })
 }
