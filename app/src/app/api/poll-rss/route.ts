@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { createHash } from 'crypto'
 
-const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const SUPA_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const BASE = process.env.NEXT_PUBLIC_SUPABASE_URL + '/rest/v1'
+const KEY  = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const H    = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
 
 const FEEDS = [
   { name: 'Billboard',      url: 'https://www.billboard.com/feed/' },
@@ -61,25 +61,37 @@ function parseItems(xml: string): Array<{ title: string; url: string; body: stri
   return out
 }
 
+async function dbGet(path: string): Promise<unknown[]> {
+  const r = await fetch(BASE + path, { headers: H })
+  return r.json()
+}
+
+async function dbPost(path: string, body: unknown, prefer = 'return=representation'): Promise<{ status: number; data: unknown[] }> {
+  const r = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { ...H, 'Prefer': prefer },
+    body: JSON.stringify(body)
+  })
+  const data = await r.json().catch(() => [])
+  return { status: r.status, data: Array.isArray(data) ? data : [] }
+}
+
 export const maxDuration = 60
 
 export async function GET() {
-  const db = createClient(SUPA_URL, SUPA_KEY)
-  const { data: rows } = await db.from('artists').select('id, name').limit(2000)
+  // Load artists
+  const artistRows = await dbGet('/artists?select=id,name&limit=2000') as Array<{id: string; name: string}>
   const idx: Record<string, string> = {}
-  for (const a of (rows ?? [])) idx[a.name.toLowerCase()] = a.id
+  for (const a of artistRows) idx[a.name.toLowerCase()] = a.id
 
   let arts = 0, ments = 0
-  const sc: Record<string, number[]> = {}
-  const ct: Record<string, number> = {}
+  const pressScores: Record<string, number[]> = {}
+  const pressCounts: Record<string, number> = {}
 
   for (const feed of FEEDS) {
     try {
       const res = await fetch(feed.url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)',
-          'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-        },
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)', 'Accept': 'application/rss+xml, */*' },
         signal: AbortSignal.timeout(8000),
       })
       if (!res.ok) { console.warn(feed.name, res.status); continue }
@@ -88,46 +100,66 @@ export async function GET() {
       console.log(feed.name + ': ' + items.length)
 
       for (const { title, url, body } of items) {
-        const text = (title + ' ' + body).slice(0, 2000)
-        const s    = afinn(text)
-        const hash = md5(url + title)
+        const text  = (title + ' ' + body).slice(0, 2000)
+        const score = afinn(text)
+        const hash  = md5(url + title)
 
-        // Insert article — fetch by content_hash after (handles duplicates)
-        await db.from('articles').upsert(
-          { source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash },
-          { onConflict: 'content_hash' }
-        )
-        const { data: art } = await db.from('articles').select('id').eq('content_hash', hash).single()
+        // Upsert article via REST — PROVEN to work
+        const upsRes = await fetch(BASE + '/articles?on_conflict=content_hash', {
+          method: 'POST',
+          headers: { ...H, 'Prefer': 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify({ source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash })
+        })
+        const upsData = await upsRes.json().catch(() => [])
+        const artId = Array.isArray(upsData) ? upsData[0]?.id : upsData?.id
 
-        if (!art?.id) continue
+        if (!artId) {
+          // Conflict returned nothing — fetch the existing row
+          const existing = await dbGet('/articles?content_hash=eq.' + hash + '&select=id') as Array<{id: string}>
+          if (!existing[0]?.id) continue
+          arts++
+          const lower = text.toLowerCase()
+          for (const [name, aid] of Object.entries(idx)) {
+            if (!lower.includes(name)) continue
+            await fetch(BASE + '/artist_mentions', {
+              method: 'POST',
+              headers: { ...H, 'Prefer': 'return=minimal' },
+              body: JSON.stringify({ artist_id: aid, article_id: existing[0].id, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
+            }).catch(() => {})
+            if (!pressScores[aid]) { pressScores[aid] = []; pressCounts[aid] = 0 }
+            pressScores[aid].push(score); pressCounts[aid]++; ments++
+          }
+          continue
+        }
+
         arts++
-
         const lower = text.toLowerCase()
         for (const [name, aid] of Object.entries(idx)) {
           if (!lower.includes(name)) continue
-          try {
-            await db.from('artist_mentions').insert({ artist_id: aid, article_id: art.id, sentiment: s, context_snippet: text.slice(0, 300), afinn_score: s, mention_type: 'press', captured_at: new Date().toISOString() })
-          } catch (_e) { /* dup */ }
-          if (!sc[aid]) { sc[aid] = []; ct[aid] = 0 }
-          sc[aid].push(s)
-          ct[aid]++
-          ments++
+          await fetch(BASE + '/artist_mentions', {
+            method: 'POST',
+            headers: { ...H, 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ artist_id: aid, article_id: artId, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
+          }).catch(() => {})
+          if (!pressScores[aid]) { pressScores[aid] = []; pressCounts[aid] = 0 }
+          pressScores[aid].push(score); pressCounts[aid]++; ments++
         }
       }
-    } catch (e) { console.error(feed.name, String(e)) }
+    } catch(e) { console.error(feed.name, String(e)) }
   }
 
-  for (const aid of Object.keys(sc)) {
-    const avg = sc[aid].reduce((a, b) => a + b, 0) / sc[aid].length
-    const ps  = Math.min((Math.log1p(ct[aid]) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
-    await db.from('artist_press_signals').insert({
-      artist_id: aid,
-      captured_at: new Date().toISOString(),
-      article_count_7d: ct[aid],
-      press_afinn_avg: Math.round(avg * 1000) / 1000,
-      press_score: Math.round(ps * 100) / 100,
-    })
+  // Write press signals — plain INSERT (no unique constraint on artist_id exists)
+  for (const aid of Object.keys(pressScores)) {
+    const sc   = pressScores[aid]
+    const cnt  = pressCounts[aid]
+    const avg  = sc.reduce((a, b) => a + b, 0) / sc.length
+    const ps   = Math.min((Math.log1p(cnt) / Math.log1p(50)) * (1 + avg * 0.2) * 100, 100)
+    await fetch(BASE + '/artist_press_signals', {
+      method: 'POST',
+      headers: { ...H, 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ artist_id: aid, captured_at: new Date().toISOString(), article_count_7d: cnt, press_afinn_avg: Math.round(avg * 1000) / 1000, press_score: Math.round(ps * 100) / 100 })
+    }).catch(() => {})
   }
 
-  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: Object.keys(sc).length })
+  return NextResponse.json({ ok: true, articles: arts, mentions: ments, press_signals: Object.keys(pressScores).length })
 }
