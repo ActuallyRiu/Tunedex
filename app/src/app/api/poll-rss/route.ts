@@ -103,7 +103,7 @@ export async function GET() {
         const named = findMentions(text, idx)
         for (const name of named) {
           const aid = idx[name]
-          await db.from('artist_mentions').insert({ artist_id: aid, article_id: art.id, sentiment: score, context_snippet: text.slice(0,300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() }).then(()=>{}).catch(()=>{})
+          try { await db.from('artist_mentions').insert({ artist_id: aid, article_id: art.id, sentiment: score, context_snippet: text.slice(0,300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() }) } catch(_e) {}
           if (!scores[aid]) { scores[aid] = []; counts[aid] = 0 }
           scores[aid].push(score)
           counts[aid]++
