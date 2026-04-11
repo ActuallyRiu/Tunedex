@@ -173,8 +173,9 @@ export async function GET() {
   })
 
   if (Date.now() - started < deadline) {
-    await fetch(BASE + '/artist_press_signals', {
-      method: 'POST', headers: { ...SH, 'Prefer': 'return=minimal' }, body: JSON.stringify(pressBatch)
+    // Upsert on artist_id — requires UNIQUE constraint on artist_id (one row per artist, always latest)
+    await fetch(BASE + '/artist_press_signals?on_conflict=artist_id', {
+      method: 'POST', headers: { ...SH, 'Prefer': 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(pressBatch)
     }).catch(() => {})
   }
 
