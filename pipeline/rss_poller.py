@@ -1,15 +1,15 @@
 """
-tunedex/pipeline/rss_poller.py — v4
+tunedex/pipeline/rss_poller.py â v4
 
 Writes to correct schema:
-  articles            → source_name, url, title, body, published_at, sentiment, content_hash
-  artist_mentions     → artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
-  artist_press_signals  → artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
-  artist_sentiment_signals → artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
+  articles            â source_name, url, title, body, published_at, sentiment, content_hash
+  artist_mentions     â artist_id, article_id, sentiment, context_snippet, afinn_score, mention_type, captured_at
+  artist_press_signals  â artist_id, captured_at, article_count_7d, press_afinn_avg, press_score (upsert aggregated)
+  artist_sentiment_signals â artist_id, captured_at, afinn_avg, mention_count_7d (upsert aggregated)
 
 Sources are read from the `sources` table (already seeded with Billboard, Rolling Stone etc.)
-Reddit optional — activates when REDDIT_CLIENT_ID/SECRET are set.
-Persistent while-True loop — never exits.
+Reddit optional â activates when REDDIT_CLIENT_ID/SECRET are set.
+Persistent while-True loop â never exits.
 """
 
 import os, re, time, logging, hashlib
@@ -132,7 +132,7 @@ def poll_rss(db: Client, sources: list, artist_index: dict) -> dict:
                     db.table("articles").upsert({
                         "id":           article_id,
                         "source_name":  source_name,
-                        "url":          url,
+                        "original_url": url,
                         "title":        title,
                         "body":         body[:3000],
                         "published_at": now,
@@ -227,10 +227,10 @@ def run():
             sources      = load_sources(db)
             artist_index = load_artists(db)
 
-            log.info(f"Cycle start — {len(sources)} sources | {len(artist_index)} artists")
+            log.info(f"Cycle start â {len(sources)} sources | {len(artist_index)} artists")
 
             if first_run:
-                log.info("First run — running backfill of available feed entries...")
+                log.info("First run â running backfill of available feed entries...")
                 first_run = False
 
             poll_rss(db, sources, artist_index)
