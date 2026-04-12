@@ -96,6 +96,9 @@ export default function Home() {
   const [stageFilter, setStage] = useState('all')
   const [labelFilter, setLabel] = useState('all')
   const [sortBy, setSort]       = useState<'score' | 'delta_24h' | 'delta_1h' | 'name'>('score')
+  const [activeTab, setActiveTab] = useState<'index' | 'compare'>('index')
+  const [pinned, setPinned]       = useState<Artist[]>([])
+  const [compareSearch, setCompareSearch] = useState('')
   const [page, setPage]         = useState(1)
 
   useEffect(() => {
@@ -115,6 +118,12 @@ export default function Home() {
   }, [])
 
   useEffect(() => { setPage(1) }, [search, stageFilter, labelFilter, sortBy])
+
+  const compareResults = useMemo(() => {
+    if (!compareSearch.trim()) return []
+    const q = compareSearch.toLowerCase()
+    return allArtists.filter(a => a.name.toLowerCase().includes(q)).slice(0, 6)
+  }, [allArtists, compareSearch])
 
   const filtered = useMemo(() => {
     let list = [...artists]
@@ -151,6 +160,147 @@ export default function Home() {
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-8">
 
+        {/* ── Tab nav ── */}
+        <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/[0.06] rounded-xl p-1 w-fit">
+          <button onClick={() => setActiveTab('index')} className={'px-4 py-1.5 rounded-lg text-sm font-medium transition-all ' + (activeTab === 'index' ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-slate-300')}>
+            Heat Index
+          </button>
+          <button onClick={() => setActiveTab('compare')} className={'px-4 py-1.5 rounded-lg text-sm font-medium transition-all ' + (activeTab === 'compare' ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-slate-300')}>
+            Compare
+          </button>
+        </div>
+
+        {/* ── Compare tab ── */}
+        {activeTab === 'compare' && (
+          <div>
+            <div className="mb-2">
+              <h2 className="text-lg font-bold tracking-tight mb-0.5">Artist Compare</h2>
+              <p className="text-slate-500 text-sm">Search and pin up to 4 artists to compare their heat scores and momentum side by side.</p>
+            </div>
+
+            {/* Search */}
+            <div className="relative mt-4 mb-4">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
+              <input
+                value={compareSearch}
+                onChange={e => setCompareSearch(e.target.value)}
+                placeholder="Search artists to compare..."
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 focus:bg-white/[0.06] transition-all"
+              />
+            </div>
+
+            {/* Search results dropdown */}
+            {compareSearch.trim() && compareResults.length > 0 && (
+              <div className="mb-4 border border-white/[0.08] rounded-xl overflow-hidden bg-[#111]">
+                {compareResults.map(a => {
+                  const already = pinned.some(p => p.id === a.id)
+                  const full = pinned.length >= 4 && !already
+                  return (
+                    <button
+                      key={a.id}
+                      disabled={full}
+                      onClick={() => {
+                        if (!already && pinned.length < 4) {
+                          setPinned(prev => [...prev, a])
+                          setCompareSearch('')
+                        }
+                      }}
+                      className={'w-full flex items-center justify-between px-4 py-2.5 text-left transition-all border-b border-white/[0.04] last:border-0 ' + (full ? 'opacity-30 cursor-not-allowed' : already ? 'bg-emerald-500/10' : 'hover:bg-white/[0.05]')}
+                    >
+                      <div>
+                        <span className="text-sm font-medium text-white">{a.name}</span>
+                        <span className={'ml-2 text-[10px] px-1.5 py-0.5 rounded border font-medium ' + (STAGE_STYLE[a.career_stage] ?? STAGE_STYLE.emerging)}>{a.career_stage}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-400">{a.heat_score?.toFixed(1)}</span>
+                        {already ? <span className="text-[10px] text-emerald-400">Added</span> : full ? <span className="text-[10px] text-slate-600">Full</span> : <span className="text-[10px] text-slate-500">+ Add</span>}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {compareSearch.trim() && compareResults.length === 0 && (
+              <div className="mb-4 text-sm text-slate-600 px-1">No artists found for "{compareSearch}"</div>
+            )}
+
+            {/* Pinned artist cards */}
+            {pinned.length === 0 ? (
+              <div className="py-16 text-center border border-white/[0.05] rounded-2xl">
+                <div className="text-slate-600 text-sm">Search for artists above to start comparing</div>
+              </div>
+            ) : (
+              <div>
+                {/* Score bars header */}
+                {pinned.length > 1 && (
+                  <div className="mb-3 text-[10px] text-slate-600 uppercase tracking-widest px-1">Relative heat score</div>
+                )}
+                <div className="space-y-2">
+                  {(() => {
+                    const maxScore = Math.max(...pinned.map(a => a.heat_score || 0))
+                    return pinned.map((a, idx) => (
+                      <div key={a.id} className="bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3">
+                        {/* Top row: rank + name + remove */}
+                        <div className="flex items-start justify-between gap-2 mb-2.5">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-slate-600 text-xs tabular-nums w-5 text-right shrink-0">#{a.rank}</span>
+                            <div className="min-w-0">
+                              <div className="font-medium text-sm truncate">{a.name}</div>
+                              <span className={'text-[10px] px-1.5 py-0.5 rounded border font-medium ' + (STAGE_STYLE[a.career_stage] ?? STAGE_STYLE.emerging)}>{a.career_stage}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="text-right">
+                              <div className={'text-[10px] font-semibold mb-0.5 ' + (LABEL_COLOUR[a.heat_label] ?? 'text-slate-500')}>{a.heat_label}</div>
+                              <div className="text-2xl font-bold tabular-nums leading-none">{a.heat_score?.toFixed(1)}</div>
+                            </div>
+                            <button
+                              onClick={() => setPinned(prev => prev.filter(p => p.id !== a.id))}
+                              className="text-slate-700 hover:text-slate-400 transition-colors text-lg leading-none ml-1"
+                            >×</button>
+                          </div>
+                        </div>
+                        {/* Delta badges */}
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <DeltaBadge value={a.delta_1h} label="1h" />
+                          <DeltaBadge value={a.delta_24h} label="24h" />
+                        </div>
+                        {/* Score bar */}
+                        <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: maxScore > 0 ? ((a.heat_score || 0) / maxScore * 100) + '%' : '0%',
+                              background: idx === 0 ? '#34d399' : idx === 1 ? '#60a5fa' : idx === 2 ? '#f472b6' : '#fb923c'
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ))
+                  })()}
+                </div>
+
+                {/* Add another prompt */}
+                {pinned.length < 4 && (
+                  <div className="mt-2 text-center text-xs text-slate-700 py-2">
+                    {4 - pinned.length} slot{pinned.length < 3 ? 's' : ''} remaining — search above to add more
+                  </div>
+                )}
+
+                {/* Clear all */}
+                <div className="mt-4 text-center">
+                  <button onClick={() => setPinned([])} className="text-xs text-slate-700 hover:text-slate-500 transition-colors">
+                    Clear all
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Heat Index tab ── */}
+        {activeTab === 'index' && <div>
         <div className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Tunedex <span className="text-emerald-400">Heat Index</span></h1>
@@ -257,6 +407,8 @@ export default function Home() {
             {pageStart+1}–{Math.min(pageStart+PAGE_SIZE,filtered.length)} of {filtered.length} artists · Signals: streaming · press · sentiment · brand · radio
           </div>
         )}
+      </div>}
+
       </div>
     </div>
   )
