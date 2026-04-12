@@ -7,6 +7,7 @@ interface Artist {
   name: string
   rank: number
   heat_score: number
+  slug: string
   anomaly_flag?: boolean
   anomaly_reason?: string
   anomaly_delta?: number
@@ -63,7 +64,7 @@ async function fetchArtists(): Promise<Artist[]> {
   const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
 
   // Main artists fetch
-  const res = await fetch(SU + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
+  const res = await fetch(SU + '/rest/v1/artists?select=id,name,slug,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
   const raw: Artist[] = await res.json()
   if (!raw?.length) return []
 
@@ -364,7 +365,7 @@ export default function Home() {
         ) : (
           <div className="space-y-1">
             {pageItems.map(a => (
-              <div key={a.id} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all">
+              <a key={a.id} href={'/artist/' + a.slug} className="grid grid-cols-[28px_14px_1fr_auto] gap-3 items-center px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.055] hover:border-white/[0.07] transition-all cursor-pointer">
                 <span className="text-slate-600 text-xs tabular-nums text-right">{a.rank}</span>
                 <span className="text-xs font-bold">
                   {a.delta_24h === null ? <span className="text-slate-700">—</span> : a.delta_24h > 0.05 ? <span className="text-emerald-400">&#x25b2;</span> : a.delta_24h < -0.05 ? <span className="text-rose-400">&#x25bc;</span> : <span className="text-slate-600">—</span>}
@@ -383,7 +384,7 @@ export default function Home() {
                   }
                   <div className="text-[22px] font-bold tabular-nums leading-none mt-0.5">{a.heat_score?.toFixed(1)}</div>
                 </div>
-              </div>
+              </a>
             ))}
           </div>
         )}
