@@ -7,6 +7,9 @@ interface Artist {
   name: string
   rank: number
   heat_score: number
+  anomaly_flag?: boolean
+  anomaly_reason?: string
+  anomaly_delta?: number
   heat_label: string
   career_stage: string
   last_scored_at: string
@@ -60,7 +63,7 @@ async function fetchArtists(): Promise<Artist[]> {
   const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
 
   // Main artists fetch
-  const res = await fetch(SU + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
+  const res = await fetch(SU + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners,anomaly_flag,anomaly_reason,anomaly_delta&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
   const raw: Artist[] = await res.json()
   if (!raw?.length) return []
 
@@ -118,8 +121,16 @@ export default function Home() {
     if (search.trim()) { const q = search.toLowerCase(); list = list.filter(a => a.name.toLowerCase().includes(q)) }
     if (stageFilter !== 'all') list = list.filter(a => a.career_stage === stageFilter)
     if (labelFilter !== 'all') list = list.filter(a => a.heat_label === labelFilter)
-    if (sortBy === 'delta_24h') list.sort((a,b) => (b.delta_24h ?? -999) - (a.delta_24h ?? -999))
-    if (sortBy === 'delta_1h')  list.sort((a,b) => (b.delta_1h  ?? -999) - (a.delta_1h  ?? -999))
+    if (sortBy === 'delta_24h') list.sort((a,b) => {
+    if (a.anomaly_flag && !b.anomaly_flag) return 1
+    if (!a.anomaly_flag && b.anomaly_flag) return -1
+    return (b.delta_24h ?? -999) - (a.delta_24h ?? -999)
+  })
+    if (sortBy === 'delta_1h')  list.sort((a,b) => {
+    if (a.anomaly_flag && !b.anomaly_flag) return 1
+    if (!a.anomaly_flag && b.anomaly_flag) return -1
+    return (b.delta_1h ?? -999) - (a.delta_1h ?? -999)
+  })
     if (sortBy === 'name')      list.sort((a,b) => a.name.localeCompare(b.name))
     return list
   }, [artists, search, stageFilter, labelFilter, sortBy])
@@ -215,7 +226,11 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0 pl-2">
-                  <div className="text-[22px] font-bold tabular-nums leading-none">{a.heat_score?.toFixed(1)}</div>
+                  {a.anomaly_flag
+                    ? <span title={a.anomaly_reason || 'Score spike detected — under review'} className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 cursor-help">⚠ {a.anomaly_delta ? (a.anomaly_delta > 0 ? '+' : '') + a.anomaly_delta.toFixed(1) + 'pts' : 'spike'}</span>
+                    : <div className={'text-[10px] font-semibold ' + (LABEL_COLOUR[a.heat_label] ?? 'text-slate-500')}>{a.heat_label}</div>
+                  }
+                  <div className="text-[22px] font-bold tabular-nums leading-none mt-0.5">{a.heat_score?.toFixed(1)}</div>
                 </div>
               </div>
             ))}
