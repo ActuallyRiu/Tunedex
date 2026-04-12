@@ -106,39 +106,10 @@ async function getYoutubeSentiment(artistName: string): Promise<{
   } catch { return null }
 }
 
-// ── Google Trends (unofficial pytrends-style via SerpAPI workaround) ─────────
-// Use a lightweight approach: check if the artist has trending searches
-// We use the unofficial trends API via a CORS-friendly endpoint
+// ── Google Trends — disabled (requires server-side proxy, adding later) ────────
 
-async function getTrendScore(artistName: string): Promise<number | null> {
-  try {
-    // Google Trends unofficial endpoint — interest over time
-    const url = `https://trends.google.com/trends/api/dailytrends?hl=en-US&tz=-60&geo=US&ns=15`
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Tunedex/1.0)' },
-      signal: AbortSignal.timeout(5000)
-    })
-    if (!res.ok) return null
-    // The response has a security prefix to strip
-    const text = await res.text()
-    const json = JSON.parse(text.replace(/^)]}'\n/, ''))
-    const trendingSearches = json?.default?.trendingSearchesDays?.[0]?.trendingSearches || []
-
-    // Check if artist appears in trending searches
-    const artistLower = artistName.toLowerCase()
-    let trendScore = 0
-    for (const trend of trendingSearches) {
-      const title = (trend.title?.query || '').toLowerCase()
-      const related = (trend.relatedQueries || []).map((q: any) => q.query?.toLowerCase() || '')
-      if (title.includes(artistLower) || related.some(r => r.includes(artistLower))) {
-        // Traffic volume from the trend
-        const traffic = parseInt((trend.formattedTraffic || '0').replace(/[^0-9]/g, '')) || 0
-        trendScore = clamp(logNorm(traffic, 10_000_000), 0, 1)
-        break
-      }
-    }
-    return trendScore
-  } catch { return null }
+async function getTrendScore(_artistName: string): Promise<number | null> {
+  return null // Will enable once server-side proxy is in place
 }
 
 // ── Main route ───────────────────────────────────────────────────────────────
@@ -225,7 +196,7 @@ export async function GET() {
     sources: {
       lastfm:  !!LASTFM_KEY,
       youtube: !!YOUTUBE_KEY,
-      trends:  true,
+      trends:  false, // re-enable once proxy is ready
     },
     elapsed_ms: Date.now() - started,
   })
