@@ -143,6 +143,10 @@ export default function Home() {
         <div className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Tunedex <span className="text-emerald-400">Heat Index</span></h1>
+            <p className="text-sm text-slate-400 mt-1 mb-3 leading-relaxed max-w-lg">
+              Real-time artist momentum scoring across streaming, press, sentiment, radio, and brand signals.
+              Updated every 15 minutes — the higher the score, the more heat an artist is generating right now.
+            </p>
             <p className="text-slate-500 mt-1 text-sm">
               {loading ? 'Loading…' : filtered.length + ' artists · page ' + safePage + ' of ' + totalPages}
               {!loading && artists[0]?.last_scored_at && <span className="ml-2 text-slate-600">· scored {timeAgo(artists[0].last_scored_at)}</span>}
@@ -211,8 +215,7 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0 pl-2">
-                  <div className={'text-[10px] font-semibold ' + (LABEL_COLOUR[a.heat_label] ?? 'text-slate-500')}>{a.heat_label}</div>
-                  <div className="text-[22px] font-bold tabular-nums leading-none mt-0.5">{a.heat_score?.toFixed(1)}</div>
+                  <div className="text-[22px] font-bold tabular-nums leading-none">{a.heat_score?.toFixed(1)}</div>
                 </div>
               </div>
             ))}
