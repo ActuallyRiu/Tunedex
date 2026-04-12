@@ -122,8 +122,8 @@ export default function Home() {
   const compareResults = useMemo(() => {
     if (!compareSearch.trim()) return []
     const q = compareSearch.toLowerCase()
-    return allArtists.filter(a => a.name.toLowerCase().includes(q)).slice(0, 6)
-  }, [allArtists, compareSearch])
+    return artists.filter(a => a.name.toLowerCase().includes(q)).slice(0, 6)
+  }, [artists, compareSearch])
 
   const filtered = useMemo(() => {
     let list = [...artists]
