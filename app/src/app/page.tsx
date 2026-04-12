@@ -163,9 +163,12 @@ export default function Home() {
         {/* ── Compare tab ── */}
         {activeTab === 'compare' && (
           <div>
-            <div className="mb-2">
-              <h2 className="text-lg font-bold tracking-tight mb-0.5">Artist Compare</h2>
-              <p className="text-slate-500 text-sm">Search and pin up to 4 artists to compare their heat scores and momentum side by side.</p>
+            <div className="mb-2 flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-bold tracking-tight mb-0.5">Artist Compare</h2>
+                <p className="text-slate-500 text-sm">Search and pin up to 4 artists to compare their heat scores and momentum side by side.</p>
+              </div>
+              <button onClick={() => setActiveTab('index')} className="text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1 mt-1 shrink-0">← Back</button>
             </div>
 
             {/* Search */}
@@ -312,8 +315,8 @@ export default function Home() {
               className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
           </div>
           <button
-            onClick={() => setActiveTab(activeTab === 'compare' ? 'index' : 'compare')}
-            className={'flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-medium border transition-all whitespace-nowrap ' + (activeTab === 'compare' ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400' : 'bg-white/[0.04] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.07]')}
+            onClick={() => setActiveTab('compare')}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-medium border transition-all whitespace-nowrap bg-white/[0.04] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.07]"
           >
             ⇄ Compare
           </button>
