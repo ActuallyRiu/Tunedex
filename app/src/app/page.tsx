@@ -63,7 +63,7 @@ async function fetchArtists(): Promise<Artist[]> {
   const ago1h  = new Date(now.getTime() -  1 * 60 * 60 * 1000).toISOString()
 
   // Main artists fetch
-  const res = await fetch(SU + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners,anomaly_flag,anomaly_reason,anomaly_delta&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
+  const res = await fetch(SU + '/rest/v1/artists?select=id,name,heat_score,heat_label,career_stage,last_scored_at,monthly_listeners&heat_score=gt.0&order=heat_score.desc&limit=1000', { headers: H })
   const raw: Artist[] = await res.json()
   if (!raw?.length) return []
 
