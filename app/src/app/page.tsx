@@ -160,16 +160,6 @@ export default function Home() {
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <div className="max-w-2xl mx-auto px-4 py-8">
 
-        {/* ── Tab nav ── */}
-        <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/[0.06] rounded-xl p-1 w-fit">
-          <button onClick={() => setActiveTab('index')} className={'px-4 py-1.5 rounded-lg text-sm font-medium transition-all ' + (activeTab === 'index' ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-slate-300')}>
-            Heat Index
-          </button>
-          <button onClick={() => setActiveTab('compare')} className={'px-4 py-1.5 rounded-lg text-sm font-medium transition-all ' + (activeTab === 'compare' ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-slate-300')}>
-            Compare
-          </button>
-        </div>
-
         {/* ── Compare tab ── */}
         {activeTab === 'compare' && (
           <div>
@@ -315,10 +305,18 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="relative mb-3">
+        <div className="flex gap-2 items-center mb-3">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">&#x1F50D;</span>
-          <input type="text" placeholder="Search artists…" value={search} onChange={e => setSearch(e.target.value)}
-            className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
+          <div className="relative flex-1">
+            <input type="text" placeholder="Search artists…" value={search} onChange={e => setSearch(e.target.value)}
+              className="w-full bg-white/[0.05] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 focus:bg-white/[0.07] transition-all" />
+          </div>
+          <button
+            onClick={() => setActiveTab(activeTab === 'compare' ? 'index' : 'compare')}
+            className={'flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-medium border transition-all whitespace-nowrap ' + (activeTab === 'compare' ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400' : 'bg-white/[0.04] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.07]')}
+          >
+            ⇄ Compare
+          </button>
           {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">✕</button>}
         </div>
 
