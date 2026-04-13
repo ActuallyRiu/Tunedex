@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import { createHash } from 'crypto'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -9,195 +8,220 @@ const KEY      = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLI
 const BASE     = SUPA_URL + '/rest/v1'
 const SH       = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json' }
 
-const LASTFM_KEY   = process.env.LASTFM_API_KEY || ''
-const YOUTUBE_KEY  = process.env.YOUTUBE_API_KEY || ''
-
-// ── Sentiment helpers ────────────────────────────────────────────────────────
+const LASTFM_KEY      = process.env.LASTFM_API_KEY || ''
+const YOUTUBE_KEY     = process.env.YOUTUBE_API_KEY || ''
+const SPOTIFY_ID      = process.env.SPOTIFY_CLIENT_ID || ''
+const SPOTIFY_SECRET  = process.env.SPOTIFY_CLIENT_SECRET || ''
 
 function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)) }
+function logNorm(v: number, ceiling: number) { return v <= 0 ? 0 : clamp(Math.log1p(v) / Math.log1p(ceiling), 0, 1) }
 
-/** Normalise a raw count to 0–1 using log scale */
-function logNorm(v: number, ceiling: number) {
-  if (v <= 0) return 0
-  return clamp(Math.log1p(v) / Math.log1p(ceiling), 0, 1)
+// ── Spotify ──────────────────────────────────────────────────────────────────
+
+let spotifyToken = ''
+let spotifyTokenExpiry = 0
+
+async function getSpotifyToken(): Promise<string> {
+  if (spotifyToken && Date.now() < spotifyTokenExpiry) return spotifyToken
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + btoa(SPOTIFY_ID + ':' + SPOTIFY_SECRET),
+    },
+    body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(5000),
+  })
+  const d = await res.json()
+  spotifyToken = d.access_token || ''
+  spotifyTokenExpiry = Date.now() + (d.expires_in || 3600) * 1000 - 60000
+  return spotifyToken
 }
 
-// ── Last.fm ──────────────────────────────────────────────────────────────────
-
-async function getLastfmSentiment(artistName: string): Promise<{
-  listeners: number; playcount: number; score: number
+async function getSpotifyData(artistName: string, cachedSpotifyId?: string | null): Promise<{
+  spotifyId: string; popularity: number; followers: number; score: number
 } | null> {
-  if (!LASTFM_KEY) return null
+  if (!SPOTIFY_ID || !SPOTIFY_SECRET) return null
   try {
-    const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=${encodeURIComponent(artistName)}&api_key=${LASTFM_KEY}&format=json`
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
-    if (!res.ok) return null
-    const d = await res.json()
-    const artist = d.artist
-    if (!artist) return null
+    const token = await getSpotifyToken()
+    if (!token) return null
 
-    const listeners = parseInt(artist.stats?.listeners || '0')
-    const playcount = parseInt(artist.stats?.playcount || '0')
+    let artistData: any = null
 
-    // plays per listener = engagement depth (how much people replay = positive sentiment)
-    const playsPerListener = listeners > 0 ? playcount / listeners : 0
+    // Use cached Spotify ID if available — faster and more accurate
+    if (cachedSpotifyId) {
+      const r = await fetch(`https://api.spotify.com/v1/artists/${cachedSpotifyId}`, {
+        headers: { 'Authorization': 'Bearer ' + token },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (r.ok) artistData = await r.json()
+    }
 
-    // Score: normalise listeners (ceiling 10M) + plays-per-listener bonus
-    const listenerScore   = logNorm(listeners, 10_000_000)
-    const engagementScore = clamp(playsPerListener / 20, 0, 1) // 20+ plays per listener = maxed
+    // Fall back to search if no cached ID or lookup failed
+    if (!artistData) {
+      const searchRes = await fetch(
+        `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist&limit=1`,
+        { headers: { 'Authorization': 'Bearer ' + token }, signal: AbortSignal.timeout(5000) }
+      )
+      if (!searchRes.ok) return null
+      const searchData = await searchRes.json()
+      artistData = searchData.artists?.items?.[0]
+    }
 
-    // Combined: weighted toward engagement (that's the sentiment signal, not just reach)
-    const score = clamp(listenerScore * 0.4 + engagementScore * 0.6, 0, 1)
+    if (!artistData) return null
 
-    return { listeners, playcount, score }
+    const popularity = artistData.popularity || 0      // 0-100, Spotify's own momentum-weighted score
+    const followers  = artistData.followers?.total || 0
+
+    // Score: popularity is already momentum-weighted (recent streams count more)
+    // Normalise popularity to 0-1 and give it 80% weight, follower velocity 20%
+    const popScore  = popularity / 100
+    const follScore = logNorm(followers, 50_000_000)
+    const score     = clamp(popScore * 0.8 + follScore * 0.2, 0, 1)
+
+    return { spotifyId: artistData.id, popularity, followers, score }
   } catch { return null }
 }
 
-// ── YouTube ──────────────────────────────────────────────────────────────────
+// ── Last.fm ───────────────────────────────────────────────────────────────────
 
-async function getYoutubeSentiment(artistName: string): Promise<{
-  viewVelocity: number; likeRatio: number; score: number
-} | null> {
+async function getLastfmData(artistName: string): Promise<{ listeners: number; score: number } | null> {
+  if (!LASTFM_KEY) return null
+  try {
+    const res = await fetch(
+      `https://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=${encodeURIComponent(artistName)}&api_key=${LASTFM_KEY}&format=json`,
+      { signal: AbortSignal.timeout(5000) }
+    )
+    if (!res.ok) return null
+    const d = await res.json()
+    const listeners = parseInt(d.artist?.stats?.listeners || '0')
+    const playcount = parseInt(d.artist?.stats?.playcount || '0')
+    const playsPerListener = listeners > 0 ? playcount / listeners : 0
+    // Cap engagement score — high replay of classic albums ≠ current heat
+    const engagementScore = clamp(playsPerListener / 30, 0, 0.5)
+    const listenerScore   = logNorm(listeners, 10_000_000) * 0.5
+    return { listeners, score: clamp(listenerScore + engagementScore, 0, 0.7) }
+  } catch { return null }
+}
+
+// ── YouTube ───────────────────────────────────────────────────────────────────
+
+async function getYoutubeData(artistName: string): Promise<{ score: number } | null> {
   if (!YOUTUBE_KEY) return null
   try {
-    // Search for artist's recent videos
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(artistName)}&type=video&order=date&maxResults=5&key=${YOUTUBE_KEY}`
-    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(5000) })
+    const searchRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(artistName)}&type=video&order=date&maxResults=5&key=${YOUTUBE_KEY}`,
+      { signal: AbortSignal.timeout(5000) }
+    )
     if (!searchRes.ok) return null
     const searchData = await searchRes.json()
     const videoIds = (searchData.items || []).map((v: any) => v.id?.videoId).filter(Boolean).join(',')
     if (!videoIds) return null
 
-    // Get stats for those videos
-    const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${videoIds}&key=${YOUTUBE_KEY}`
-    const statsRes = await fetch(statsUrl, { signal: AbortSignal.timeout(5000) })
+    const statsRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds}&key=${YOUTUBE_KEY}`,
+      { signal: AbortSignal.timeout(5000) }
+    )
     if (!statsRes.ok) return null
     const statsData = await statsRes.json()
     const videos = statsData.items || []
+    if (!videos.length) return null
 
-    if (videos.length === 0) return null
-
-    // Aggregate: total views, likes across recent videos
-    let totalViews = 0, totalLikes = 0, totalComments = 0
+    let totalViews = 0, totalLikes = 0
     for (const v of videos) {
-      totalViews    += parseInt(v.statistics?.viewCount    || '0')
-      totalLikes    += parseInt(v.statistics?.likeCount    || '0')
-      totalComments += parseInt(v.statistics?.commentCount || '0')
+      totalViews += parseInt(v.statistics?.viewCount  || '0')
+      totalLikes += parseInt(v.statistics?.likeCount  || '0')
     }
-
-    const avgViews    = totalViews    / videos.length
-    const avgLikes    = totalLikes    / videos.length
-    const avgComments = totalComments / videos.length
-
-    // Like ratio: likes as proportion of views (comments amplify engagement)
-    const likeRatio    = avgViews > 0 ? avgLikes / avgViews : 0
-    const commentRatio = avgViews > 0 ? avgComments / avgViews : 0
-
-    // View velocity: log-normalised (ceiling 10M views per video)
-    const viewVelocity = logNorm(avgViews, 10_000_000)
-
-    // Score: velocity (reach) + engagement quality
-    const score = clamp(
-      viewVelocity * 0.5 + clamp(likeRatio * 50, 0, 1) * 0.3 + clamp(commentRatio * 100, 0, 1) * 0.2,
-      0, 1
-    )
-
-    return { viewVelocity: Math.round(avgViews), likeRatio: Math.round(likeRatio * 1000) / 1000, score }
+    const avgViews    = totalViews / videos.length
+    const likeRatio   = avgViews > 0 ? totalLikes / totalViews : 0
+    const viewScore   = logNorm(avgViews, 5_000_000)
+    const score       = clamp(viewScore * 0.6 + clamp(likeRatio * 30, 0, 1) * 0.4, 0, 1)
+    return { score }
   } catch { return null }
 }
 
-// ── Google Trends — disabled (requires server-side proxy, adding later) ────────
-
-async function getTrendScore(_artistName: string): Promise<number | null> {
-  return null // Will enable once server-side proxy is in place
-}
-
-// ── Main route ───────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function GET() {
   const started = Date.now()
 
-  // Load artists
-  const artistRows: Array<{ id: string; name: string }> =
-    await fetch(BASE + '/artists?select=id,name&limit=2000', { headers: SH }).then(r => r.json())
+  const artistRows: Array<{ id: string; name: string; spotify_id: string | null }> =
+    await fetch(BASE + '/artists?select=id,name,spotify_id&limit=2000', { headers: SH }).then(r => r.json())
 
-  let processed = 0, written = 0
-  const sentimentBatch: unknown[] = []
+  let processed = 0, sentimentWritten = 0, streamingWritten = 0
 
-  // Process in parallel batches of 10 to stay within timeout
-  const BATCH = 10
+  const BATCH = 5
   for (let i = 0; i < artistRows.length; i += BATCH) {
-    if (Date.now() - started > 50000) break // hard deadline
+    if (Date.now() - started > 52000) break
 
     const batch = artistRows.slice(i, i + BATCH)
-    const results = await Promise.allSettled(batch.map(async artist => {
-      const [lastfm, youtube, trend] = await Promise.all([
-        getLastfmSentiment(artist.name),
-        getYoutubeSentiment(artist.name),
-        getTrendScore(artist.name),
-      ])
+    await Promise.all(batch.map(async artist => {
+      try {
+        const [spotify, lastfm, youtube] = await Promise.all([
+          getSpotifyData(artist.name, artist.spotify_id),
+          getLastfmData(artist.name),
+          getYoutubeData(artist.name),
+        ])
 
-      // Build composite sentiment score
-      // Weighted: Last.fm engagement 40%, YouTube engagement 40%, Trends 20%
-      const scores: number[] = []
-      const weights: number[] = []
-      if (lastfm)          { scores.push(lastfm.score);   weights.push(0.4) }
-      if (youtube)         { scores.push(youtube.score);  weights.push(0.4) }
-      if (trend !== null)  { scores.push(trend);          weights.push(0.2) }
+        // ── Write streaming signal from Spotify ──
+        if (spotify) {
+          // Cache Spotify ID on artist row if not already set
+          if (!artist.spotify_id) {
+            await fetch(BASE + '/artists?id=eq.' + artist.id, {
+              method: 'PATCH', headers: SH,
+              body: JSON.stringify({ spotify_id: spotify.spotifyId })
+            }).catch(() => {})
+          }
 
-      if (scores.length === 0) return null
+          // Write to artist_streaming_signals
+          await fetch(BASE + '/artist_streaming_signals?on_conflict=artist_id', {
+            method: 'POST',
+            headers: { ...SH, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify({
+              artist_id:         artist.id,
+              captured_at:       new Date().toISOString(),
+              spotify_listeners: spotify.followers,  // using followers as listener proxy
+              spotify_popularity: spotify.popularity,
+            })
+          }).catch(() => {})
+          streamingWritten++
+        }
 
-      const totalWeight  = weights.reduce((a, b) => a + b, 0)
-      const weightedSum  = scores.reduce((sum, s, i) => sum + s * weights[i], 0)
-      const sentimentRaw = totalWeight > 0 ? weightedSum / totalWeight : 0
+        // ── Write sentiment signal ──
+        const scores: number[] = []
+        const weights: number[] = []
+        if (spotify) { scores.push(spotify.score);  weights.push(0.5) }
+        if (lastfm)  { scores.push(lastfm.score);   weights.push(0.3) }
+        if (youtube) { scores.push(youtube.score);  weights.push(0.2) }
 
-      // Map 0–1 to AFINN-like -1 to 1 scale
-      // 0.5 = neutral (0), 1.0 = very positive (1), 0.0 = very negative (-1)
-      const afinnAvg = clamp((sentimentRaw - 0.5) * 2, -1, 1)
+        if (scores.length > 0) {
+          const totalW    = weights.reduce((a, b) => a + b, 0)
+          const sentScore = scores.reduce((sum, s, i) => sum + s * weights[i], 0) / totalW
+          const afinnAvg  = clamp((sentScore - 0.5) * 2, -1, 1)
 
-      // Is this a controversy signal? (trend spike + low like ratio = controversy)
-      const isControversy = !!(trend && trend > 0.5 && youtube && youtube.likeRatio < 0.01)
+          await fetch(BASE + '/artist_sentiment_signals?on_conflict=artist_id', {
+            method: 'POST',
+            headers: { ...SH, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify({
+              artist_id:        artist.id,
+              captured_at:      new Date().toISOString(),
+              afinn_avg:        Math.round(afinnAvg * 1000) / 1000,
+              sentiment_score:  Math.round(sentScore * 100) / 100,
+              mention_count_7d: lastfm ? Math.round(lastfm.listeners / 1000) : 0,
+              is_controversy:   false,
+            })
+          }).catch(() => {})
+          sentimentWritten++
+        }
 
-      return {
-        artist_id:        artist.id,
-        captured_at:      new Date().toISOString(),
-        afinn_avg:        Math.round(afinnAvg * 1000) / 1000,
-        mention_count_7d: lastfm ? Math.round(lastfm.listeners / 1000) : 0, // proxy: listeners in thousands
-        sentiment_score:  Math.round(sentimentRaw * 100) / 100,
-        is_controversy:   isControversy,
-        // Source breakdowns
-        afinn_press_comments: youtube ? Math.round((youtube.score - 0.5) * 2 * 1000) / 1000 : null,
-        valence_slope_7d:     trend !== null ? Math.round(trend * 1000) / 1000 : null,
-      }
+        processed++
+      } catch {}
     }))
-
-    for (const r of results) {
-      processed++
-      if (r.status === 'fulfilled' && r.value) {
-        sentimentBatch.push(r.value)
-      }
-    }
-  }
-
-  // Batch write to artist_sentiment_signals
-  if (sentimentBatch.length > 0) {
-    await fetch(BASE + '/artist_sentiment_signals', {
-      method: 'POST',
-      headers: { ...SH, 'Prefer': 'return=minimal' },
-      body: JSON.stringify(sentimentBatch)
-    }).catch(() => {})
-    written = sentimentBatch.length
   }
 
   return NextResponse.json({
-    ok: true,
-    processed,
-    written,
-    sources: {
-      lastfm:  !!LASTFM_KEY,
-      youtube: !!YOUTUBE_KEY,
-      trends:  false, // re-enable once proxy is ready
-    },
+    ok: true, processed, sentiment_written: sentimentWritten, streaming_written: streamingWritten,
+    sources: { spotify: !!SPOTIFY_ID, lastfm: !!LASTFM_KEY, youtube: !!YOUTUBE_KEY },
     elapsed_ms: Date.now() - started,
   })
 }
