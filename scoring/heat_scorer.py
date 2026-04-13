@@ -53,8 +53,13 @@ def score_with_signals(row: dict, sigs: dict, weights: dict) -> dict:
     prs  = sigs.get("press", {})
 
     # Component scores (0-1)
-    s_stream = log_norm(ss.get("spotify_listeners") or ml)
-    s_sent   = (float(sent.get("afinn_avg") or 0) + 1) / 2 if sent else 0.25
+    # If no real streaming signal, cap fallback at 0.5 so legacy fanbase size
+    # doesn't dominate over artists with real current momentum signals
+    if ss:
+        s_stream = log_norm(ss.get("spotify_listeners") or ml)
+    else:
+        s_stream = min(log_norm(ml), 0.5)
+    s_sent   = (float(sent.get("afinn_avg") or 0) + 1) / 2 if sent else 0.35
     s_brand  = (float(br.get("brand_base_score") or 0) / 100) if br else log_norm(ml) * 0.7
     s_radio  = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.25
 
