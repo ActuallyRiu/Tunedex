@@ -60,18 +60,25 @@ def score_with_signals(row: dict, sigs: dict, weights: dict) -> dict:
     else:
         s_stream = min(log_norm(ml), 0.5)
     # Use sentiment_score (0-1 range from Last.fm+YouTube) — no fake floor
-    s_sent   = float(sent.get("sentiment_score") or 0) if sent else 0.0
-    s_brand  = (float(br.get("brand_base_score") or 0) / 100) if br else 0.0
+    # Cap sentiment at 0.5 — Last.fm measures catalogue depth not current heat
+    # Legacy artists (Beatles, Radiohead) score 0.99 due to obsessive replays, not momentum
+    raw_sent = float(sent.get("sentiment_score") or 0) if sent else 0.0
+    s_sent   = min(raw_sent, 0.5)
+    s_brand  = (float(br.get("brand_base_score") or 0) / 100) if br else 0.0  # 0 when no real signal
     s_radio  = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.0
 
-    # Press: use tier-weighted count if available, else raw article count
+    # Press: use pre-computed press_score (0-100) from poll-rss route
+    # Falls back to tier-weighted article count if press_score not available
     if prs:
-        t1 = int(prs.get("tier1_count_7d") or 0)
-        t2 = int(prs.get("tier2_count_7d") or 0)
-        t3 = int(prs.get("tier3_count_7d") or 0)
-        raw = int(prs.get("article_count_7d") or 0)
-        weighted_count = t1 * 3 + t2 * 1.5 + t3 * 1 if (t1 + t2 + t3) > 0 else raw
-        s_press = log_norm(weighted_count, 50)
+        if prs.get("press_score"):
+            s_press = float(prs.get("press_score")) / 100
+        else:
+            t1 = int(prs.get("tier1_count_7d") or 0)
+            t2 = int(prs.get("tier2_count_7d") or 0)
+            t3 = int(prs.get("tier3_count_7d") or 0)
+            raw = int(prs.get("article_count_7d") or 0)
+            weighted_count = t1 * 3 + t2 * 1.5 + t3 * 1 if (t1 + t2 + t3) > 0 else raw
+            s_press = log_norm(weighted_count, 50)
     else:
         s_press = 0.0
 
