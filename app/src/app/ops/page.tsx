@@ -2,266 +2,390 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const SVC  = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const BASE = process.env.NEXT_PUBLIC_SUPABASE_URL + '/rest/v1'
-const H    = { 'apikey': SVC, 'Authorization': 'Bearer ' + SVC }
-const CH   = { ...H, 'Prefer': 'count=exact', 'Range': '0-0' }
+const SURL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const B    = SURL + '/rest/v1'
+const H    = { apikey: SVC, Authorization: 'Bearer ' + SVC }
 
-function timeAgo(iso: string | null) {
+function ago(iso: string | null) {
   if (!iso) return '—'
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < 60)   return s + 's ago'
+  if (s < 60)  return s + 's ago'
   if (s < 3600) return Math.floor(s/60) + 'm ago'
-  if (s < 86400)return Math.floor(s/3600) + 'h ago'
+  if (s < 86400) return Math.floor(s/3600) + 'h ago'
   return Math.floor(s/86400) + 'd ago'
 }
+function pct(n: number, total: number) { return total ? Math.round(n/total*100) : 0 }
+function fmt(n: number) { return n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(0)+'K' : String(n) }
 
-function parseCount(cr: string | null): number {
-  if (!cr) return 0
-  const m = cr.match(/(\d+)$/)
-  return m ? parseInt(m[1]) : 0
+const LABEL_COLOR: Record<string,string> = {
+  Exploding: '#ff4444', Rising: '#ff9500', Gaining: '#34d399', Emerging: '#60a5fa', 'Early signals': '#6b7280'
+}
+const STAGE_COLOR: Record<string,string> = {
+  established: '#a78bfa', breaking: '#fb923c', rising: '#facc15', emerging: '#38bdf8'
 }
 
 type OpsData = {
-  counts:  { artists: number; articles: number; mentions: number; streaming: number; sentiment: number; press: number }
-  lastRun: { scored: string|null; article: string|null; sentiment: string|null; streaming: string|null }
-  top10:   Array<{ name: string; heat_score: number; heat_label: string; career_stage: string }>
+  artists: number
+  articles: number
+  mentions: number
+  streaming: number
+  sentiment: number
+  pressSigs: number
+  spotifyIds: number
+  lastScored: string | null
+  lastArticle: string | null
+  lastSentiment: string | null
+  lastStreaming: string | null
+  top10: Array<{ name: string; score: number; label: string; stage: string; scored: string }>
   weights: Array<{ stage: string; weight_streaming: number; weight_brand: number; weight_sentiment: number; weight_radio: number; weight_press: number }>
-  spotifyActive: boolean
-  pressActive:   boolean
+  recentPress: Array<{ title: string; source_name: string; published_at: string }>
+  anomalies: Array<{ name: string; delta: number; reason: string; flagged_at: string }>
+  scoreDistrib: { exploding: number; rising: number; gaining: number; emerging: number; early: number }
+  avgScore: number
 }
 
-async function fetchOpsData(): Promise<OpsData> {
-  const count = (table: string, filter = '') =>
-    fetch(`${BASE}/${table}?select=count${filter}`, { headers: CH }).then(r => r.headers.get('content-range'))
-
-  const [aC, artC, menC, strC, senC, preC,
-         lastScored, lastArt, lastSen, lastStr,
-         weights, top10, spotifyCheck, pressCheck] = await Promise.all([
-    count('artists'),
-    count('articles'),
-    count('artist_mentions'),
-    count('artist_streaming_signals'),
-    count('artist_sentiment_signals'),
-    count('artist_press_signals'),
-    fetch(BASE + '/artists?select=last_scored_at&order=last_scored_at.desc&limit=1', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/articles?select=published_at&order=published_at.desc&limit=1', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/artist_sentiment_signals?select=captured_at&order=captured_at.desc&limit=1', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/artist_streaming_signals?select=captured_at&order=captured_at.desc&limit=1', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/stage_weight_config?select=*&order=listener_min.asc', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/artists?select=name,heat_score,heat_label,career_stage&order=heat_score.desc&limit=10', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/artist_streaming_signals?select=spotify_popularity&spotify_popularity=not.is.null&limit=1', { headers: H }).then(r => r.json()),
-    fetch(BASE + '/artist_press_signals?select=article_count_7d&article_count_7d=gt.0&limit=1', { headers: H }).then(r => r.json()),
+async function fetchOps(): Promise<OpsData> {
+  const hc = { ...H, Prefer: 'count=exact', Range: '0-0' }
+  const [
+    artists, articles, mentions, streaming, sentiment, pressSigs, spotifyIds,
+    lastScored, lastArticle, lastSentiment, lastStreaming,
+    top10, weights, recentPress, anomalies, allScores
+  ] = await Promise.all([
+    fetch(B+'/artists?select=count',               {headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/articles?select=count',              {headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artist_mentions?select=count',       {headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artist_streaming_signals?select=count',{headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artist_sentiment_signals?select=count',{headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artist_press_signals?select=count&article_count_7d=gt.0',{headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artists?select=count&spotify_id=not.is.null',{headers:hc}).then(r=>r.headers.get('content-range')),
+    fetch(B+'/artists?select=last_scored_at&order=last_scored_at.desc&limit=1',{headers:H}).then(r=>r.json()),
+    fetch(B+'/articles?select=published_at&order=published_at.desc&limit=1',{headers:H}).then(r=>r.json()),
+    fetch(B+'/artist_sentiment_signals?select=captured_at&order=captured_at.desc&limit=1',{headers:H}).then(r=>r.json()),
+    fetch(B+'/artist_streaming_signals?select=captured_at&order=captured_at.desc&limit=1',{headers:H}).then(r=>r.json()),
+    fetch(B+'/artists?select=name,heat_score,heat_label,career_stage,last_scored_at&order=heat_score.desc&limit=10',{headers:H}).then(r=>r.json()),
+    fetch(B+'/stage_weight_config?select=stage,weight_streaming,weight_brand,weight_sentiment,weight_radio,weight_press&order=listener_min.asc',{headers:H}).then(r=>r.json()),
+    fetch(B+'/articles?select=title,source_name,published_at&order=published_at.desc&limit=8',{headers:H}).then(r=>r.json()),
+    fetch(B+'/artists?select=name,anomaly_delta,anomaly_reason,anomaly_flagged_at&anomaly_flag=eq.true&order=anomaly_flagged_at.desc&limit=5',{headers:H}).then(r=>r.json()),
+    fetch(B+'/artists?select=heat_score,heat_label&limit=2000',{headers:H}).then(r=>r.json()),
   ])
 
+  const parse = (cr: string|null) => parseInt(cr?.split('/')?.[1] || '0')
+  const scores = (allScores as any[]).map(a => a.heat_score).filter(Boolean)
+  const avg    = scores.length ? Math.round(scores.reduce((a:number,b:number)=>a+b,0)/scores.length*10)/10 : 0
+  const labels = (allScores as any[]).map(a => a.heat_label)
   return {
-    counts: {
-      artists:   parseCount(aC),
-      articles:  parseCount(artC),
-      mentions:  parseCount(menC),
-      streaming: parseCount(strC),
-      sentiment: parseCount(senC),
-      press:     parseCount(preC),
+    artists:      parse(artists),
+    articles:     parse(articles),
+    mentions:     parse(mentions),
+    streaming:    parse(streaming),
+    sentiment:    parse(sentiment),
+    pressSigs:    parse(pressSigs),
+    spotifyIds:   parse(spotifyIds),
+    lastScored:   (lastScored as any[])[0]?.last_scored_at || null,
+    lastArticle:  (lastArticle as any[])[0]?.published_at || null,
+    lastSentiment:(lastSentiment as any[])[0]?.captured_at || null,
+    lastStreaming:(lastStreaming as any[])[0]?.captured_at || null,
+    top10:        (top10 as any[]).map(a=>({name:a.name,score:a.heat_score,label:a.heat_label,stage:a.career_stage,scored:ago(a.last_scored_at)})),
+    weights:      weights as any[],
+    recentPress:  recentPress as any[],
+    anomalies:    anomalies as any[],
+    scoreDistrib: {
+      exploding: labels.filter((l:string)=>l==='Exploding').length,
+      rising:    labels.filter((l:string)=>l==='Rising').length,
+      gaining:   labels.filter((l:string)=>l==='Gaining').length,
+      emerging:  labels.filter((l:string)=>l==='Emerging').length,
+      early:     labels.filter((l:string)=>l==='Early signals').length,
     },
-    lastRun: {
-      scored:    lastScored[0]?.last_scored_at || null,
-      article:   lastArt[0]?.published_at || null,
-      sentiment: lastSen[0]?.captured_at || null,
-      streaming: lastStr[0]?.captured_at || null,
-    },
-    top10:         Array.isArray(top10) ? top10 : [],
-    weights:       Array.isArray(weights) ? weights : [],
-    spotifyActive: Array.isArray(spotifyCheck) && spotifyCheck.length > 0,
-    pressActive:   Array.isArray(pressCheck) && pressCheck.length > 0,
+    avgScore: avg,
   }
 }
 
-const LABEL_COL: Record<string, string> = {
-  Exploding: '#f87171', Rising: '#fb923c', Gaining: '#34d399', Emerging: '#60a5fa', 'Early signals': '#6b7280'
+function Bar({ value, total, color = '#34d399' }: { value: number; total: number; color?: string }) {
+  const p = pct(value, total)
+  return (
+    <div className="relative h-1 bg-white/[0.06] rounded-full overflow-hidden mt-2">
+      <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-700" style={{ width: p+'%', background: color }} />
+    </div>
+  )
 }
-const STAGE_COL: Record<string, string> = {
-  established: '#a78bfa', breaking: '#fb923c', rising: '#fbbf24', emerging: '#60a5fa'
+
+function StatusDot({ ok }: { ok: boolean }) {
+  return <span className={`inline-block w-2 h-2 rounded-full mr-2 ${ok ? 'bg-emerald-400' : 'bg-red-500'}`} style={ok ? { boxShadow: '0 0 6px #34d399' } : { boxShadow: '0 0 6px #f87171' }} />
+}
+
+function SectionLabel({ label }: { label: string }) {
+  return <div className="text-[10px] tracking-[0.2em] text-slate-600 font-mono uppercase mb-3">{label}</div>
 }
 
 export default function OpsPage() {
   const [data, setData]       = useState<OpsData | null>(null)
-  const [lastFetch, setLastFetch] = useState<Date | null>(null)
-  const [tick, setTick]       = useState(0)
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [countdown, setCountdown]     = useState(30)
+  const [loading, setLoading]         = useState(true)
 
-  const load = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const d = await fetchOpsData()
+      const d = await fetchOps()
       setData(d)
-      setLastFetch(new Date())
-    } catch (e) { console.error(e) }
+      setLastRefresh(new Date())
+      setCountdown(30)
+    } catch(e) { console.error(e) }
+    finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => { const t = setInterval(() => { load(); setTick(n => n+1) }, 30000); return () => clearInterval(t) }, [load])
-  useEffect(() => { const t = setInterval(() => setTick(n => n+1), 1000); return () => clearInterval(t) }, [])
+  useEffect(() => { refresh() }, [refresh])
 
-  const scoredAgo  = data?.lastRun.scored    ? Math.floor((Date.now() - new Date(data.lastRun.scored).getTime()) / 60000) : null
-  const sentAgo    = data?.lastRun.sentiment ? Math.floor((Date.now() - new Date(data.lastRun.sentiment).getTime()) / 60000) : null
-  const streamAgo  = data?.lastRun.streaming ? Math.floor((Date.now() - new Date(data.lastRun.streaming).getTime()) / 60000) : null
-  const articleAgo = data?.lastRun.article   ? Math.floor((Date.now() - new Date(data.lastRun.article).getTime()) / 60000) : null
+  useEffect(() => {
+    const t = setInterval(() => {
+      setCountdown(c => { if (c <= 1) { refresh(); return 30 } return c - 1 })
+    }, 1000)
+    return () => clearInterval(t)
+  }, [refresh])
 
-  const scorerStatus  = scoredAgo  !== null ? (scoredAgo  <= 20 ? 'ok' : 'warn') : 'unknown'
-  const sentStatus    = sentAgo    !== null ? (sentAgo    <= 15 ? 'ok' : 'warn') : 'unknown'
-  const streamStatus  = streamAgo  !== null ? (streamAgo  <= 30 ? 'ok' : 'warn') : 'unknown'
-  const pressStatus   = articleAgo !== null ? (articleAgo <= 60 ? 'ok' : 'warn') : 'unknown'
-
-  const dot = (s: string) => s === 'ok' ? '#34d399' : s === 'warn' ? '#fb923c' : '#6b7280'
-
-  if (!data) return (
-    <div style={{ background: '#080c0e', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ color: '#34d399', fontFamily: 'monospace', fontSize: 13, letterSpacing: 2 }}>LOADING OPS...</div>
+  if (loading) return (
+    <div className="min-h-screen bg-[#080808] flex items-center justify-center">
+      <div className="font-mono text-emerald-400 text-sm animate-pulse tracking-widest">INITIALISING OPS...</div>
     </div>
   )
+  if (!data) return null
+
+  const total = data.artists
 
   return (
-    <div style={{ background: '#080c0e', minHeight: '100vh', color: '#e2e8f0', fontFamily: "'IBM Plex Mono', 'Fira Code', monospace", padding: '24px 20px' }}>
-      <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
-
+    <div className="min-h-screen bg-[#080808] text-white font-mono" style={{ fontFamily: "'Courier New', monospace" }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 32, borderBottom: '1px solid #1a2530', paddingBottom: 16 }}>
+      <div className="border-b border-white/[0.06] px-6 py-4 flex items-center justify-between">
         <div>
-          <div style={{ fontSize: 11, color: '#34d399', letterSpacing: 4, textTransform: 'uppercase', marginBottom: 4 }}>Tunedex</div>
-          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.5 }}>Operations Dashboard</div>
+          <div className="text-[10px] tracking-[0.25em] text-emerald-400 mb-1">TUNEDEX</div>
+          <div className="text-xl font-bold tracking-tight" style={{ fontFamily: 'inherit' }}>Operations Dashboard</div>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 2 }}>LAST REFRESH</div>
-          <div style={{ fontSize: 12, color: '#94a3b8' }}>{lastFetch ? lastFetch.toLocaleTimeString() : '—'}</div>
-          <div style={{ fontSize: 10, color: '#34d399', marginTop: 2, letterSpacing: 1 }}>↺ AUTO 30s</div>
-        </div>
-      </div>
-
-      {/* Pipeline status row */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 12 }}>Pipeline Status</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          {[
-            { label: 'Heat Scorer',       sub: 'cron */15 * * * *', when: data.lastRun.scored,    status: scorerStatus,  detail: scoredAgo !== null ? scoredAgo + 'm ago' : '—' },
-            { label: 'Sentiment / Spotify', sub: 'every ~10 min',     when: data.lastRun.sentiment, status: sentStatus,    detail: sentAgo   !== null ? sentAgo   + 'm ago' : '—' },
-            { label: 'Streaming',          sub: 'batched by cycle',   when: data.lastRun.streaming, status: streamStatus,  detail: streamAgo !== null ? streamAgo + 'm ago' : '—' },
-            { label: 'Press / RSS',        sub: 'every 90s',          when: data.lastRun.article,   status: pressStatus,   detail: articleAgo !== null ? articleAgo + 'm ago' : '—' },
-          ].map(s => (
-            <div key={s.label} style={{ background: '#0d1519', border: `1px solid ${s.status === 'ok' ? '#1a3a2a' : s.status === 'warn' ? '#3a2a10' : '#1a2530'}`, borderRadius: 8, padding: '14px 16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <div style={{ width: 7, height: 7, borderRadius: '50%', background: dot(s.status), boxShadow: `0 0 6px ${dot(s.status)}` }} />
-                <div style={{ fontSize: 11, fontWeight: 500, color: '#cbd5e1' }}>{s.label}</div>
-              </div>
-              <div style={{ fontSize: 18, fontWeight: 600, color: s.status === 'ok' ? '#34d399' : s.status === 'warn' ? '#fb923c' : '#6b7280', marginBottom: 4 }}>{s.detail}</div>
-              <div style={{ fontSize: 10, color: '#4a6070' }}>{s.sub}</div>
-            </div>
-          ))}
+        <div className="text-right">
+          <div className="text-[10px] text-slate-600 tracking-widest mb-1">LAST REFRESH</div>
+          <div className="text-emerald-400 text-sm">{lastRefresh?.toLocaleTimeString('en-GB', {hour12:false}) || '—'}</div>
+          <button onClick={refresh} className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors mt-0.5 tracking-widest">
+            ↺ AUTO {countdown}s
+          </button>
         </div>
       </div>
 
-      {/* Signal coverage */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 12 }}>Signal Coverage</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
-          {[
-            { label: 'Artists',   val: data.counts.artists,   max: data.counts.artists,   color: '#a78bfa' },
-            { label: 'Articles',  val: data.counts.articles,  max: 500,                    color: '#60a5fa' },
-            { label: 'Mentions',  val: data.counts.mentions,  max: 5000,                   color: '#60a5fa' },
-            { label: 'Streaming', val: data.counts.streaming, max: data.counts.artists,    color: data.spotifyActive ? '#34d399' : '#fb923c' },
-            { label: 'Sentiment', val: data.counts.sentiment, max: data.counts.artists,    color: '#34d399' },
-            { label: 'Press Sigs',val: data.counts.press,     max: data.counts.artists,    color: data.pressActive  ? '#34d399' : '#fb923c' },
-          ].map(s => {
-            const pct = Math.min(Math.round((s.val / (s.max || 1)) * 100), 100)
-            return (
-              <div key={s.label} style={{ background: '#0d1519', border: '1px solid #1a2530', borderRadius: 8, padding: '14px 16px' }}>
-                <div style={{ fontSize: 10, color: '#4a6070', marginBottom: 6, letterSpacing: 1 }}>{s.label.toUpperCase()}</div>
-                <div style={{ fontSize: 20, fontWeight: 600, color: s.color, marginBottom: 8 }}>{s.val.toLocaleString()}</div>
-                <div style={{ height: 3, background: '#1a2530', borderRadius: 2 }}>
-                  <div style={{ height: '100%', width: pct + '%', background: s.color, borderRadius: 2, transition: 'width 0.6s ease' }} />
+      <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
+
+        {/* Pipeline Status */}
+        <div>
+          <SectionLabel label="Pipeline Status" />
+          <div className="grid grid-cols-4 gap-3">
+            {[
+              { label: 'Heat Scorer',        time: data.lastScored,     schedule: 'cron */15 * * * *',  ok: data.lastScored ? (Date.now()-new Date(data.lastScored).getTime()) < 20*60*1000 : false },
+              { label: 'Sentiment / Spotify',time: data.lastSentiment,  schedule: 'every ~10 min',      ok: data.lastSentiment ? (Date.now()-new Date(data.lastSentiment).getTime()) < 20*60*1000 : false },
+              { label: 'Streaming Signals',  time: data.lastStreaming,   schedule: 'batched by cycle',   ok: data.lastStreaming ? (Date.now()-new Date(data.lastStreaming).getTime()) < 30*60*1000 : false },
+              { label: 'Press / RSS',        time: data.lastArticle,    schedule: 'every 90s',          ok: data.lastArticle ? (Date.now()-new Date(data.lastArticle).getTime()) < 10*60*1000 : false },
+            ].map(s => (
+              <div key={s.label} className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+                <div className="flex items-center mb-1">
+                  <StatusDot ok={s.ok} />
+                  <span className="text-[11px] text-slate-400 tracking-wide">{s.label}</span>
                 </div>
-                <div style={{ fontSize: 9, color: '#4a6070', marginTop: 4 }}>{pct}% coverage</div>
+                <div className={`text-xl font-bold mt-2 ${s.ok ? 'text-emerald-400' : s.time ? 'text-amber-400' : 'text-red-400'}`}>
+                  {ago(s.time)}
+                </div>
+                <div className="text-[10px] text-slate-700 mt-1">{s.schedule}</div>
               </div>
-            )
-          })}
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Data sources */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 12 }}>Data Sources</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          {[
-            { label: 'Spotify',  active: data.spotifyActive, detail: data.counts.streaming + ' artists with popularity data', role: 'Streaming primary signal' },
-            { label: 'Last.fm',  active: true,               detail: data.counts.sentiment + ' artists with sentiment data',   role: 'Sentiment composite (30%)' },
-            { label: 'YouTube',  active: true,               detail: 'Recent video engagement scoring',                        role: 'Sentiment composite (20%)' },
-            { label: '19 RSS Feeds', active: data.pressActive, detail: data.counts.articles + ' articles ingested',             role: 'Press signal — every 90s' },
-          ].map(s => (
-            <div key={s.label} style={{ background: '#0d1519', border: `1px solid ${s.active ? '#1a3a2a' : '#2a1a1a'}`, borderRadius: 8, padding: '14px 16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <div style={{ width: 7, height: 7, borderRadius: '50%', background: s.active ? '#34d399' : '#f87171', boxShadow: `0 0 6px ${s.active ? '#34d399' : '#f87171'}` }} />
-                <div style={{ fontSize: 12, fontWeight: 500 }}>{s.label}</div>
-                <div style={{ marginLeft: 'auto', fontSize: 9, color: s.active ? '#34d399' : '#f87171', letterSpacing: 1 }}>{s.active ? 'LIVE' : 'OFFLINE'}</div>
+        {/* Signal Coverage */}
+        <div>
+          <SectionLabel label="Signal Coverage" />
+          <div className="grid grid-cols-6 gap-3">
+            {[
+              { label: 'Artists',    value: data.artists,   total: 934, color: '#a78bfa' },
+              { label: 'Articles',   value: data.articles,  total: 5000, color: '#60a5fa' },
+              { label: 'Mentions',   value: data.mentions,  total: 5000, color: '#60a5fa' },
+              { label: 'Streaming',  value: data.streaming, total,       color: '#34d399' },
+              { label: 'Sentiment',  value: data.sentiment, total,       color: '#34d399' },
+              { label: 'Press Sigs', value: data.pressSigs, total,       color: data.pressSigs/total < 0.5 ? '#f59e0b' : '#34d399' },
+            ].map(s => (
+              <div key={s.label} className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+                <div className="text-[10px] text-slate-600 tracking-widest mb-1">{s.label.toUpperCase()}</div>
+                <div className="text-2xl font-bold" style={{ color: s.color }}>{fmt(s.value)}</div>
+                <Bar value={s.value} total={s.total} color={s.color} />
+                <div className="text-[10px] text-slate-700 mt-1">{pct(s.value, s.total)}% coverage</div>
               </div>
-              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4 }}>{s.detail}</div>
-              <div style={{ fontSize: 9, color: '#4a6070' }}>{s.role}</div>
+            ))}
+          </div>
+        </div>
+
+        {/* Data Sources + Score Distribution */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Data Sources */}
+          <div>
+            <SectionLabel label="Data Sources" />
+            <div className="space-y-2">
+              {[
+                { name: 'Spotify',     detail: `${data.spotifyIds} artists cached · popularity + followers`, sub: 'Streaming primary signal (50% sentiment weight)', ok: data.spotifyIds > 0 },
+                { name: 'Last.fm',     detail: `${data.sentiment} artists with sentiment data`,              sub: 'Sentiment composite (30%)',                        ok: data.sentiment > 0 },
+                { name: 'YouTube',     detail: 'Recent video engagement scoring',                              sub: 'Sentiment composite (20%)',                        ok: true },
+                { name: '19 RSS Feeds',detail: `${data.articles} articles ingested`,                        sub: 'Press signal — every 90s',                         ok: data.articles > 0 },
+              ].map(s => (
+                <div key={s.name} className="bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <StatusDot ok={s.ok} />
+                    <div>
+                      <div className="text-sm text-white">{s.name}</div>
+                      <div className="text-[10px] text-slate-600">{s.detail}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-[10px] px-2 py-0.5 rounded ${s.ok ? 'bg-emerald-400/10 text-emerald-400' : 'bg-red-400/10 text-red-400'}`}>
+                      {s.ok ? 'LIVE' : 'STALE'}
+                    </div>
+                    <div className="text-[10px] text-slate-700 mt-1">{s.sub}</div>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
 
-      {/* Weight matrix + top 10 side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 28 }}>
-
-        {/* Weight matrix */}
-        <div style={{ background: '#0d1519', border: '1px solid #1a2530', borderRadius: 8, padding: '18px 20px' }}>
-          <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 14 }}>Scoring Weight Matrix</div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead>
-              <tr style={{ color: '#4a6070', fontSize: 9, letterSpacing: 1 }}>
-                {['STAGE','STREAM','BRAND','SENT','RADIO','PRESS','∑'].map(h => (
-                  <th key={h} style={{ textAlign: h === 'STAGE' ? 'left' : 'right', paddingBottom: 8, fontWeight: 400 }}>{h}</th>
+          {/* Score Distribution */}
+          <div>
+            <SectionLabel label="Score Distribution" />
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4 h-full">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-[10px] text-slate-600 tracking-widest">AVERAGE SCORE</div>
+                <div className="text-2xl font-bold text-white">{data.avgScore}</div>
+              </div>
+              <div className="space-y-3">
+                {[
+                  { label: 'Exploding',     count: data.scoreDistrib.exploding, color: '#ff4444' },
+                  { label: 'Rising',        count: data.scoreDistrib.rising,    color: '#ff9500' },
+                  { label: 'Gaining',       count: data.scoreDistrib.gaining,   color: '#34d399' },
+                  { label: 'Emerging',      count: data.scoreDistrib.emerging,  color: '#60a5fa' },
+                  { label: 'Early signals', count: data.scoreDistrib.early,     color: '#6b7280' },
+                ].map(d => (
+                  <div key={d.label} className="flex items-center gap-3">
+                    <div className="text-[10px] w-24 shrink-0" style={{ color: d.color }}>{d.label}</div>
+                    <div className="flex-1 h-1 bg-white/[0.06] rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: pct(d.count, total)+'%', background: d.color }} />
+                    </div>
+                    <div className="text-[10px] text-slate-500 w-8 text-right tabular-nums">{d.count}</div>
+                  </div>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.weights.map(w => {
-                const sum = w.weight_streaming + w.weight_brand + w.weight_sentiment + w.weight_radio + w.weight_press
-                return (
-                  <tr key={w.stage} style={{ borderTop: '1px solid #111c24' }}>
-                    <td style={{ padding: '7px 0', color: STAGE_COL[w.stage] || '#94a3b8', fontWeight: 500 }}>{w.stage}</td>
-                    {[w.weight_streaming, w.weight_brand, w.weight_sentiment, w.weight_radio, w.weight_press].map((v, i) => (
-                      <td key={i} style={{ textAlign: 'right', color: '#cbd5e1' }}>{v}</td>
-                    ))}
-                    <td style={{ textAlign: 'right', color: '#4a6070' }}>{sum}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 12, fontSize: 9, color: '#4a6070', borderTop: '1px solid #111c24', paddingTop: 10 }}>
-            Weights normalised at runtime — scorer reads live from DB each cycle
-          </div>
-        </div>
-
-        {/* Top 10 */}
-        <div style={{ background: '#0d1519', border: '1px solid #1a2530', borderRadius: 8, padding: '18px 20px' }}>
-          <div style={{ fontSize: 10, color: '#4a6070', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 14 }}>Current Top 10</div>
-          {data.top10.map((a, i) => (
-            <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0', borderTop: i > 0 ? '1px solid #111c24' : undefined }}>
-              <div style={{ width: 18, fontSize: 9, color: '#4a6070', textAlign: 'right', flexShrink: 0 }}>{i+1}</div>
-              <div style={{ flex: 1, fontSize: 11, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
-              <div style={{ fontSize: 9, color: STAGE_COL[a.career_stage] || '#6b7280', flexShrink: 0 }}>{a.career_stage}</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: LABEL_COL[a.heat_label] || '#94a3b8', flexShrink: 0, width: 36, textAlign: 'right' }}>{a.heat_score?.toFixed(1)}</div>
-              <div style={{ fontSize: 9, color: LABEL_COL[a.heat_label] || '#6b7280', flexShrink: 0, width: 70, textAlign: 'right' }}>{a.heat_label}</div>
+              </div>
             </div>
-          ))}
-          <div style={{ marginTop: 10, fontSize: 9, color: '#4a6070', borderTop: '1px solid #111c24', paddingTop: 10 }}>
-            Scored {timeAgo(data.lastRun.scored)} · updates every 15 min
           </div>
         </div>
-      </div>
 
-      {/* Footer */}
-      <div style={{ borderTop: '1px solid #1a2530', paddingTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 9, color: '#4a6070', letterSpacing: 2 }}>TUNEDEX OPS · REFRESHES EVERY 30S</div>
-        <a href="/" style={{ fontSize: 9, color: '#4a6070', letterSpacing: 2, textDecoration: 'none' }}>← HEAT INDEX</a>
+        {/* Weight Matrix + Anomalies */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Weight Matrix */}
+          <div>
+            <SectionLabel label="Scoring Weight Matrix" />
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-white/[0.06]">
+                    {['STAGE','STREAM','BRAND','SENT','RADIO','PRESS','Σ'].map(h => (
+                      <th key={h} className="px-3 py-2 text-left text-slate-600 tracking-widest font-normal">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.weights.map(w => {
+                    const sum = w.weight_streaming + w.weight_brand + w.weight_sentiment + w.weight_radio + w.weight_press
+                    return (
+                      <tr key={w.stage} className="border-b border-white/[0.04] last:border-0">
+                        <td className="px-3 py-2.5" style={{ color: STAGE_COLOR[w.stage] || '#fff' }}>{w.stage}</td>
+                        <td className="px-3 py-2.5 text-slate-300">{w.weight_streaming}</td>
+                        <td className="px-3 py-2.5 text-slate-300">{w.weight_brand}</td>
+                        <td className="px-3 py-2.5 text-slate-300">{w.weight_sentiment}</td>
+                        <td className="px-3 py-2.5 text-slate-300">{w.weight_radio}</td>
+                        <td className="px-3 py-2.5 text-slate-300">{w.weight_press}</td>
+                        <td className="px-3 py-2.5 text-slate-600">{sum}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Anomalies */}
+          <div>
+            <SectionLabel label={`Spike Alerts (${data.anomalies.length})`} />
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+              {data.anomalies.length === 0 ? (
+                <div className="px-4 py-8 text-center text-slate-700 text-[11px] tracking-widest">NO ACTIVE ANOMALIES</div>
+              ) : (
+                <div className="divide-y divide-white/[0.04]">
+                  {data.anomalies.map((a, i) => (
+                    <div key={i} className="px-4 py-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-sm font-medium text-amber-400">{a.name}</div>
+                        <div className="text-[10px] text-amber-400/70">+{a.delta?.toFixed(1)}pts</div>
+                      </div>
+                      <div className="text-[10px] text-slate-600 leading-relaxed">{a.reason}</div>
+                      <div className="text-[10px] text-slate-700 mt-1">{ago(a.flagged_at)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Top 10 + Recent Press */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Top 10 */}
+          <div>
+            <SectionLabel label="Current Top 10" />
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+              <div className="divide-y divide-white/[0.04]">
+                {data.top10.map((a, i) => (
+                  <div key={a.name} className="flex items-center gap-3 px-4 py-2.5">
+                    <div className="text-[11px] text-slate-700 tabular-nums w-4 shrink-0">{i+1}</div>
+                    <div className="flex-1 min-w-0">
+                      <a href={`/artist/${a.name.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'')}`}
+                         className="text-sm text-white hover:text-emerald-400 transition-colors truncate block">{a.name}</a>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] px-1.5 py-px rounded" style={{ background: (STAGE_COLOR[a.stage]||'#888')+'22', color: STAGE_COLOR[a.stage]||'#888' }}>{a.stage}</span>
+                        <span className="text-[10px] text-slate-700">scored {a.scored}</span>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-base font-bold tabular-nums text-white">{a.score?.toFixed(1)}</div>
+                      <div className="text-[10px]" style={{ color: LABEL_COLOR[a.label] || '#6b7280' }}>{a.label}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Recent Press */}
+          <div>
+            <SectionLabel label="Recent Press Ingested" />
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+              {data.recentPress.length === 0 ? (
+                <div className="px-4 py-8 text-center text-slate-700 text-[11px] tracking-widest">NO RECENT ARTICLES</div>
+              ) : (
+                <div className="divide-y divide-white/[0.04]">
+                  {data.recentPress.map((p, i) => (
+                    <div key={i} className="px-4 py-3">
+                      <div className="text-[11px] text-slate-300 leading-snug line-clamp-2">{p.title}</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-slate-600">{p.source_name}</span>
+                        <span className="text-slate-800">·</span>
+                        <span className="text-[10px] text-slate-700">{ago(p.published_at)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   )
