@@ -3,8 +3,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 
-const SU = 'https://lwmzrccvwxbdrrpzojeg.supabase.co'
-const SK = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3bXpyY2N2d3hiZHJycHpvamVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTk4NDcsImV4cCI6MjA5MDQzNTg0N30.frFP2f0XrwgOrHAgdcSUwn3HBE2wYnFdhQLiU-7YJ4Y'
 
 const STAGE_STYLE: Record<string, string> = {
   established: 'bg-violet-500/15 text-violet-300 border-violet-500/25',
@@ -49,7 +47,6 @@ export default function ArtistPage() {
   const { slug } = useParams() as { slug: string }
   const [data, setData]     = useState<ArtistData | null>(null)
   const [bio, setBio]       = useState<string>('')
-  const [bioLoading, setBioLoading] = useState(false)
   const [error, setError]   = useState('')
 
   useEffect(() => {
@@ -59,50 +56,12 @@ export default function ArtistPage() {
       .then(d => {
         if (d.error) { setError('Artist not found'); return }
         setData(d)
-        if (d.artist.bio) {
-          setBio(d.artist.bio)
-        } else {
-          generateBio(d)
-        }
+        setBio(d.artist.bio || '')
       })
       .catch(() => setError('Failed to load artist'))
   }, [slug])
 
-  async function generateBio(d: ArtistData) {
-    setBioLoading(true)
-    try {
-      const prompt = [
-        `Write a concise, engaging artist bio for ${d.artist.name}.`,
-        `Career stage: ${d.artist.career_stage}. Genres: ${d.artist.genres.join(', ')}.`,
-        `Monthly listeners: ${fmtListeners(d.artist.monthly_listeners)}.`,
-        d.topTracks.length ? `Top songs include: ${d.topTracks.map(t => t.name).join(', ')}.` : '',
-        d.articles.length ? `Recent press coverage: ${d.articles.map(a => a.title).slice(0,3).join('; ')}.` : '',
-        `Keep it 2-3 sentences. Factual, no hype. Focus on their sound, impact, and current moment.`,
-      ].filter(Boolean).join(' ')
 
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: prompt }]
-        })
-      })
-      const rd = await res.json()
-      const text = rd.content?.[0]?.text || ''
-      if (text) {
-        setBio(text)
-        // Cache it in Supabase
-        await fetch(SU + '/rest/v1/artists?id=eq.' + d.artist.id, {
-          method: 'PATCH',
-          headers: { 'apikey': SK, 'Authorization': 'Bearer ' + SK, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-          body: JSON.stringify({ bio: text })
-        }).catch(() => {})
-      }
-    } catch {}
-    setBioLoading(false)
-  }
 
   if (error) return (
     <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center">
@@ -151,15 +110,7 @@ export default function ArtistPage() {
         {/* Bio */}
         <div className="mb-6 bg-white/[0.03] border border-white/[0.05] rounded-xl p-4">
           <div className="text-[10px] text-slate-600 uppercase tracking-widest mb-2">About</div>
-          {bioLoading ? (
-            <div className="space-y-2">
-              <div className="h-3 bg-white/[0.05] rounded animate-pulse w-full" />
-              <div className="h-3 bg-white/[0.05] rounded animate-pulse w-4/5" />
-              <div className="h-3 bg-white/[0.05] rounded animate-pulse w-3/5" />
-            </div>
-          ) : (
-            <p className="text-sm text-slate-300 leading-relaxed">{bio || 'No bio available.'}</p>
-          )}
+          <p className="text-sm text-slate-300 leading-relaxed">{bio || 'No bio available.'}</p>
         </div>
 
         {/* Top tracks */}
@@ -211,7 +162,6 @@ export default function ArtistPage() {
           </div>
         )}
 
-        {articles.length === 0 && !bioLoading && (
           <div className="text-center py-8 text-slate-700 text-sm">No recent press coverage found.</div>
         )}
 
