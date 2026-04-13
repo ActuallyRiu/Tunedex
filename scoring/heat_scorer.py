@@ -59,9 +59,10 @@ def score_with_signals(row: dict, sigs: dict, weights: dict) -> dict:
         s_stream = log_norm(ss.get("spotify_listeners") or ml)
     else:
         s_stream = min(log_norm(ml), 0.5)
-    s_sent   = (float(sent.get("afinn_avg") or 0) + 1) / 2 if sent else 0.35
-    s_brand  = (float(br.get("brand_base_score") or 0) / 100) if br else log_norm(ml) * 0.7
-    s_radio  = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.25
+    # Use sentiment_score (0-1 range from Last.fm+YouTube) — no fake floor
+    s_sent   = float(sent.get("sentiment_score") or 0) if sent else 0.0
+    s_brand  = (float(br.get("brand_base_score") or 0) / 100) if br else 0.0
+    s_radio  = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.0
 
     # Press: use tier-weighted count if available, else raw article count
     if prs:
@@ -72,7 +73,7 @@ def score_with_signals(row: dict, sigs: dict, weights: dict) -> dict:
         weighted_count = t1 * 3 + t2 * 1.5 + t3 * 1 if (t1 + t2 + t3) > 0 else raw
         s_press = log_norm(weighted_count, 50)
     else:
-        s_press = 0.25
+        s_press = 0.0
 
     # Brand multiplier (controversy suppression)
     brand_mult = float(br.get("brand_multiplier") or 1.0) if br else 1.0
