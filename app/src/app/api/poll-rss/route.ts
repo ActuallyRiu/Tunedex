@@ -116,11 +116,21 @@ export async function GET() {
   const upserted = await dbBatchPost('/articles?on_conflict=content_hash', articleBatch) as Array<{ id: string; content_hash: string }>
   let arts = Array.isArray(upserted) ? upserted.length : 0
 
-  // Build hash->id map from returned rows
+  // Build hash->id map — upsert only returns new rows in merge mode,
+  // so explicitly fetch ALL articles by content_hash to get existing ones too
   const hashToId: Record<string, string> = {}
-  if (Array.isArray(upserted)) {
-    for (const row of upserted) {
-      if (row.id && row.content_hash) hashToId[row.content_hash] = row.id
+  const allHashes = Object.keys(articleHashMap)
+  if (allHashes.length > 0) {
+    // Fetch in chunks of 100 to avoid URL length limits
+    for (let i = 0; i < allHashes.length; i += 100) {
+      const chunk = allHashes.slice(i, i + 100)
+      const rows: Array<{id: string; content_hash: string}> = await fetch(
+        BASE + '/articles?select=id,content_hash&content_hash=in.(' + chunk.join(',') + ')',
+        { headers: SH }
+      ).then(r => r.json()).catch(() => [])
+      for (const row of rows) {
+        if (row.id && row.content_hash) hashToId[row.content_hash] = row.id
+      }
     }
   }
 
