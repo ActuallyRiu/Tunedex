@@ -72,20 +72,18 @@ def score_with_signals(row: dict, sigs: dict, weights: dict) -> dict:
     # Brand multiplier (controversy suppression)
     brand_mult = float(br.get("brand_multiplier") or 1.0) if br else 1.0
 
-    # Weighted sum using stage weights (0-100 scale)
-    ws  = weights.get("weight_streaming", 30) / 100
-    wb  = weights.get("weight_brand",    22) / 100
-    wse = weights.get("weight_sentiment", 20) / 100
-    wr  = weights.get("weight_radio",    14) / 100
-    wp  = weights.get("weight_press",    10) / 100 * (1 / (ws + wb + wse + wr + wp / (ws + wb + wse + wr + (weights.get("weight_press", 10) / 100))))
-
-    # Normalise weights (they should sum to 1.0)
-    total_w = ws + wb + wse + wr + (weights.get("weight_press", 10) / 100)
-    ws  = ws  / total_w
-    wb  = wb  / total_w
-    wse = wse / total_w
-    wr  = wr  / total_w
-    wp  = (weights.get("weight_press", 10) / 100) / total_w
+    # Weighted sum — extract raw weights and normalise so they sum to 1.0
+    ws_raw  = weights.get("weight_streaming", 30)
+    wb_raw  = weights.get("weight_brand",     22)
+    wse_raw = weights.get("weight_sentiment", 20)
+    wr_raw  = weights.get("weight_radio",     14)
+    wp_raw  = weights.get("weight_press",     10)
+    total_w = ws_raw + wb_raw + wse_raw + wr_raw + wp_raw or 100
+    ws  = ws_raw  / total_w
+    wb  = wb_raw  / total_w
+    wse = wse_raw / total_w
+    wr  = wr_raw  / total_w
+    wp  = wp_raw  / total_w
 
     base = (s_stream * ws + s_brand * wb + s_sent * wse + s_radio * wr + s_press * wp) * 100
     final = min(base * brand_mult, 110.0)
