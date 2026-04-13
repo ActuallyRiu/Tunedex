@@ -161,7 +161,7 @@ export async function GET() {
 
   // ── Phase 3: Write streaming signals for all artists with Spotify data ──
   let streamingWritten = 0
-  for (const [artistId, data] of spotifyMap.entries()) {
+  for (const [artistId, data] of Array.from(spotifyMap.entries())) {
     if (Date.now() - started > DEADLINE) break
     await fetch(BASE + '/artist_streaming_signals?on_conflict=artist_id', {
       method: 'POST',
