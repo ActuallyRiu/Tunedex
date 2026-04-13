@@ -23,7 +23,7 @@ async function generateBio(artist: any, topTracks: any[], articles: any[]): Prom
     `Monthly listeners: ${fmtListeners(artist.monthly_listeners)}.`,
     topTracks.length ? `Top songs include: ${topTracks.map((t: any) => t.name).join(', ')}.` : '',
     articles.length ? `Recent press: ${articles.map((a: any) => a.title).slice(0, 3).join('; ')}.` : '',
-    `Write 2-3 sentences. Be factual and specific. Focus on their sound, cultural impact, and current moment in their career.`,
+    `Write 2-3 sentences only. Plain prose — no markdown, no headings, no bullet points, no hashtags. Be factual and specific. Focus on their sound, cultural impact, and current moment in their career.`,
   ].filter(Boolean).join(' ')
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -33,7 +33,9 @@ async function generateBio(artist: any, topTracks: any[], articles: any[]): Prom
     signal: AbortSignal.timeout(15000),
   })
   const d = await res.json()
-  return d.content?.[0]?.text?.trim() || ''
+  const raw = d.content?.[0]?.text?.trim() || ''
+  // Strip any accidental markdown headings from the start
+  return raw.replace(/^#+\s*/gm, '').trim()
 }
 
 export async function GET(req: Request, { params }: { params: { slug: string } }) {
