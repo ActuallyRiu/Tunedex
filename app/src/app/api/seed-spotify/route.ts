@@ -13,7 +13,7 @@ const SPOTIFY_SEC = process.env.SPOTIFY_CLIENT_SECRET || ''
 async function getToken(): Promise<string> {
   const r = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Basic ' + Buffer.from(SPOTIFY_CID + ':' + SPOTIFY_SEC).toString('base64') },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': 'Basic ' + btoa(SPOTIFY_CID + ':' + SPOTIFY_SEC) },
     body: 'grant_type=client_credentials', signal: AbortSignal.timeout(8000),
   })
   const d = await r.json()
