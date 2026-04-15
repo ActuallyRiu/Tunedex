@@ -143,9 +143,15 @@ export async function GET() {
     const artId = hashToId[hash]
     if (!artId) continue
 
-    const lower = text.toLowerCase()
-    for (const [name, aid] of Object.entries(idx)) {
-      if (!lower.includes(name)) continue
+        for (const [name, aid] of Object.entries(idx)) {
+      // Word-boundary match. Short/ambiguous names (4 chars or fewer: HER, NF, Eve)
+      // require exact uppercase match to prevent pronoun false positives.
+      const isShort = name.length <= 4
+      const esc = name.replace(/[.*+?^${}()|\[\]\\]/g, '\\$&')
+      const pat = isShort
+        ? new RegExp('(?<![a-zA-Z])' + esc.toUpperCase() + '(?![a-zA-Z])')
+        : new RegExp('(?<![a-zA-Z])' + esc + '(?![a-zA-Z])', 'i')
+      if (!pat.test(text)) continue
       mentionBatch.push({ artist_id: aid, article_id: artId, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
       if (!signals[aid]) signals[aid] = { weightedScore: 0, totalWeight: 0, tier1: 0, tier2: 0, tier3: 0, count: 0 }
       const sig = signals[aid]
