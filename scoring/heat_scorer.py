@@ -1,15 +1,17 @@
 """
-tunedex/scoring/heat_scorer.py  v4 — definitive
+tunedex/scoring/heat_scorer.py  v5 — definitive clean scorer
 
-Scoring rules:
-- Weights loaded from stage_weight_config (DB), normalised to 1.0
-- Streaming: Spotify popularity (0-100) is primary. Falls back to log_norm(monthly_listeners) * 0.4
-- Sentiment: sentiment_score from poll-sentiment (Spotify+LastFM+YouTube composite), capped at 0.6
-- Brand: brand_base_score/100 when available, else 0
-- Radio: radio_base_score/100 when available, else 0
-- Press: press_score/100 when available (pre-computed, tier-weighted), else log_norm(article_count, 50)
-- No fake fallback floors — missing signal = 0, not 0.25
-- Spike detection with auto-clear after 3 stable cycles
+Signal reality as of April 2026:
+- Streaming: NO Spotify API (requires Premium). Use monthly_listeners as proxy.
+  monthly_listeners IS a legitimate signal — it reflects real audience size.
+- Sentiment: afinn_avg from press mentions only. sentiment_score is polluted by
+  Last.fm catalogue-depth bias (Beatles/Radiohead score 0.99 due to replay rates
+  not current momentum). Use afinn_avg directly.
+- Press: press_score/100 — real data for 111 artists, working correctly.
+- Brand/Radio: No real data. Score 0. No fake floors.
+# v5
+Weight philosophy: streaming (monthly_listeners) as the primary size signal,
+press as the primary momentum signal, sentiment as a modifier.
 """
 
 import os, math, logging
@@ -22,7 +24,7 @@ log = logging.getLogger("heat_scorer")
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
-SPIKE_THRESHOLD    = 5.0
+SPIKE_THRESHOLD    = 8.0
 SPIKE_CLEAR_CYCLES = 3
 SPIKE_STABLE_DELTA = 0.5
 
@@ -39,7 +41,7 @@ def fetch_signal(db: Client, table: str, artist_id: str) -> dict:
                .limit(1).execute()).data
         return r[0] if r else {}
     except Exception as e:
-        log.warning(f"Signal fetch failed {table}/{artist_id}: {e}")
+        log.warning(f"Signal fetch {table}/{artist_id}: {e}")
         return {}
 
 def score_components(row: dict, sigs: dict, weights: dict) -> dict:
@@ -51,30 +53,34 @@ def score_components(row: dict, sigs: dict, weights: dict) -> dict:
     rad  = sigs.get("radio")     or {}
     prs  = sigs.get("press")     or {}
 
-    # Streaming — Spotify popularity (0-100, recency-weighted) is primary
-    spotify_pop = ss.get("spotify_popularity")
-    if spotify_pop is not None:
-        s_stream = float(spotify_pop) / 100
-    elif ss.get("spotify_listeners"):
-        s_stream = log_norm(ss["spotify_listeners"], 50_000_000)
+    # ── Streaming ──────────────────────────────────────────────────────────
+    # Spotify unavailable (requires Premium). Use monthly_listeners.
+    # This IS a real signal — it measures real audience size.
+    # Ceiling: 100M (The Weeknd, Taylor Swift territory)
+    if ss.get("spotify_popularity") is not None:
+        # Real Spotify data for the 5 artists we have — use it
+        s_stream = float(ss["spotify_popularity"]) / 100
     else:
-        # Fallback: monthly listeners, capped at 0.4 so legacy artists don't dominate
-        s_stream = log_norm(ml, 100_000_000) * 0.4
+        # monthly_listeners: log-normalised against 100M ceiling
+        s_stream = log_norm(ml, 100_000_000)
 
-    # Sentiment — composite from Spotify+LastFM+YouTube, capped at 0.6
-    if sent:
-        raw_sent = float(sent.get("sentiment_score") or 0)
-        s_sent   = min(raw_sent, 0.6)
+    # ── Sentiment ──────────────────────────────────────────────────────────
+    # Use afinn_avg from press comments ONLY — not sentiment_score
+    # sentiment_score is polluted by Last.fm plays-per-listener (catalogue bias)
+    # afinn_avg ranges -1 to 1, map to 0-1
+    if sent and sent.get("afinn_avg") is not None:
+        raw_afinn = float(sent.get("afinn_avg") or 0)
+        s_sent = (raw_afinn + 1) / 2  # map -1..1 → 0..1
     else:
-        s_sent = 0.0
+        s_sent = 0.5  # neutral default — no sentiment data = neutral
 
-    # Brand — no fallback
+    # ── Brand ──────────────────────────────────────────────────────────────
     s_brand = (float(br.get("brand_base_score") or 0) / 100) if br else 0.0
 
-    # Radio — no fallback
+    # ── Radio ──────────────────────────────────────────────────────────────
     s_radio = (float(rad.get("radio_base_score") or 0) / 100) if rad else 0.0
 
-    # Press — use pre-computed press_score (tier-weighted, 0-100)
+    # ── Press ───────────────────────────────────────────────────────────────
     if prs:
         if prs.get("press_score"):
             s_press = float(prs["press_score"]) / 100
@@ -88,7 +94,7 @@ def score_components(row: dict, sigs: dict, weights: dict) -> dict:
     else:
         s_press = 0.0
 
-    # Weights from DB, normalised
+    # ── Weights ─────────────────────────────────────────────────────────────
     ws_r  = float(weights.get("weight_streaming", 30))
     wb_r  = float(weights.get("weight_brand",     22))
     wse_r = float(weights.get("weight_sentiment", 20))
@@ -101,7 +107,6 @@ def score_components(row: dict, sigs: dict, weights: dict) -> dict:
     wr    = wr_r  / total
     wp    = wp_r  / total
 
-    # Component points (0-100 scale, for history logging)
     sp  = round(s_stream * ws  * 100, 2)
     bp  = round(s_brand  * wb  * 100, 2)
     sep = round(s_sent   * wse * 100, 2)
@@ -137,22 +142,19 @@ def diagnose_spike(prev: dict, curr: dict) -> str:
         delta = float(curr.get(col,0) or 0) - float(prev.get(col,0) or 0)
         if abs(delta) >= 2.0:
             reasons.append(f"{label} ({'+' if delta>0 else ''}{delta:.1f}pts)")
-    if float(prev.get("press_score",0) or 0) == 0 and float(curr.get("press_score",0) or 0) > 0:
-        reasons.append("Press first data ingestion")
     return "; ".join(reasons) if reasons else "Multiple component changes"
 
 def run():
     db = create_client(SUPABASE_URL, SUPABASE_KEY)
-    log.info("Heat scorer v4 starting")
+    log.info("Heat scorer v5 starting")
 
-    # Load stage weights
     stage_weights = {}
     try:
         for w in db.table("stage_weight_config").select("*").execute().data:
             stage_weights[w["stage"]] = w
-        log.info(f"Loaded weights for stages: {list(stage_weights.keys())}")
+        log.info(f"Weights loaded: {list(stage_weights.keys())}")
     except Exception as e:
-        log.error(f"Failed to load stage weights: {e}"); return
+        log.error(f"Failed to load weights: {e}"); return
 
     artists = db.table("artists").select(
         "id,name,monthly_listeners,career_stage,heat_score,controversy_flag"
@@ -179,23 +181,19 @@ def run():
             label = heat_label(final)
             now   = datetime.now(timezone.utc).isoformat()
 
-            # Spike detection
             hist = (db.table("artist_heat_history")
                       .select("final_score,press_score,streaming_score,brand_score,sentiment_score,radio_score")
                       .eq("artist_id", aid).order("scored_at", desc=True).limit(3).execute()).data
 
             prev_score   = float(hist[0]["final_score"]) if hist else None
             score_delta  = abs(final - prev_score) if prev_score is not None else 0
-            anomaly_flag = False
-            anomaly_reason = None
 
             artist_upd = {"heat_score": round(final, 2), "heat_label": label, "last_scored_at": now}
 
             if prev_score is not None and score_delta >= SPIKE_THRESHOLD:
-                anomaly_flag   = True
-                anomaly_reason = f"Score jumped {score_delta:+.1f}pts: {diagnose_spike(hist[0], sc)}"
+                reason = f"Score jumped {score_delta:+.1f}pts: {diagnose_spike(hist[0], sc)}"
                 log.warning(f"SPIKE {row['name']}: {prev_score:.1f}->{final:.1f}")
-                artist_upd.update({"anomaly_flag": True, "anomaly_reason": anomaly_reason,
+                artist_upd.update({"anomaly_flag": True, "anomaly_reason": reason,
                                    "anomaly_flagged_at": now, "anomaly_delta": round(score_delta, 2)})
             elif hist and len(hist) >= SPIKE_CLEAR_CYCLES:
                 deltas = [abs(float(hist[i]["final_score"]) - float(hist[i+1]["final_score"]))
@@ -220,7 +218,7 @@ def run():
         except Exception as e:
             log.error(f"Error scoring {row.get('name', aid)}: {e}")
 
-    log.info(f"Scoring complete — {scored}/{len(artists)} artists scored")
+    log.info(f"Scoring complete — {scored}/{len(artists)} scored")
 
 if __name__ == "__main__":
     run()
