@@ -57,11 +57,17 @@ def score_components(row: dict, sigs: dict, weights: dict) -> dict:
     # Spotify unavailable (requires Premium). Use monthly_listeners.
     # This IS a real signal — it measures real audience size.
     # Ceiling: 100M (The Weeknd, Taylor Swift territory)
-    if ss.get("spotify_popularity") is not None:
-        # Real Spotify data for the 5 artists we have — use it
-        s_stream = float(ss["spotify_popularity"]) / 100
+    spotify_pop = ss.get("spotify_popularity")
+    spotify_lst = ss.get("spotify_listeners")
+    if spotify_pop is not None and int(spotify_pop) > 0:
+        # Real Spotify popularity — only use if non-zero (zero = Development Mode suppression)
+        s_stream = float(spotify_pop) / 100
+    elif spotify_lst is not None and int(spotify_lst) > 0:
+        # Real follower/listener count from Spotify — log-normalise against 100M
+        s_stream = log_norm(float(spotify_lst), 100_000_000)
     else:
-        # monthly_listeners: log-normalised against 100M ceiling
+        # No real Spotify data — fall back to monthly_listeners from artists table
+        # This is legitimate: monthly_listeners reflects real audience size
         s_stream = log_norm(ml, 100_000_000)
 
     # ── Sentiment ──────────────────────────────────────────────────────────
