@@ -107,7 +107,7 @@ export async function GET() {
       const text  = (title + ' ' + body).slice(0, 2000)
       const score = afinn(text)
       const hash  = md5(url + title)
-      articleBatch.push({ source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash, sentiment: score })
+      articleBatch.push({ source_name: feed.name, original_url: url, title: title.slice(0, 500), body: body.slice(0, 3000), published_at: new Date().toISOString(), content_hash: hash, sentiment: score > 0.1 ? 'positive' : score < -0.1 ? 'negative' : 'neutral' })
       articleHashMap[hash] = { feed, score, text }
     }
   }
@@ -152,7 +152,7 @@ export async function GET() {
         ? new RegExp('(?<![a-zA-Z])' + esc.toUpperCase() + '(?![a-zA-Z])')
         : new RegExp('(?<![a-zA-Z])' + esc + '(?![a-zA-Z])', 'i')
       if (!pat.test(text)) continue
-      mentionBatch.push({ artist_id: aid, article_id: artId, sentiment: score, context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
+      mentionBatch.push({ artist_id: aid, article_id: artId, sentiment: score > 0.1 ? 'positive' : score < -0.1 ? 'negative' : 'neutral', context_snippet: text.slice(0, 300), afinn_score: score, mention_type: 'press', captured_at: new Date().toISOString() })
       if (!signals[aid]) signals[aid] = { weightedScore: 0, totalWeight: 0, tier1: 0, tier2: 0, tier3: 0, count: 0 }
       const sig = signals[aid]
       sig.weightedScore += score * feed.prestige
