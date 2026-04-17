@@ -71,8 +71,8 @@ async function fetchArtists(): Promise<Artist[]> {
   // FIX: don't pass IDs in URL — query full history window then join client-side
   // This avoids the 27k-char URL that was causing 400 errors and infinite loading
   const [h24, h1] = await Promise.all([
-    fetch(SU + '/rest/v1/artist_heat_history?select=artist_id,final_score&scored_at=gte.' + ago24h + '&order=scored_at.asc&limit=5000', { headers: H }).then(r => r.json()),
-    fetch(SU + '/rest/v1/artist_heat_history?select=artist_id,final_score&scored_at=gte.' + ago1h  + '&order=scored_at.asc&limit=5000', { headers: H }).then(r => r.json()),
+    fetch(SU + '/rest/v1/artist_heat_history?select=artist_id,final_score&scored_at=gte.' + ago24h + '&order=scored_at.asc', { headers: { ...H, Range: '0-4999' } }).then(r => r.json()),
+    fetch(SU + '/rest/v1/artist_heat_history?select=artist_id,final_score&scored_at=gte.' + ago1h  + '&order=scored_at.asc', { headers: { ...H, Range: '0-4999' } }).then(r => r.json()),
   ])
 
   const first24: Record<string, number> = {}
