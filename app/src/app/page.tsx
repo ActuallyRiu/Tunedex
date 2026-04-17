@@ -104,13 +104,19 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false
+    let isFirst = true
     async function load() {
-      setLoading(true)
+      if (isFirst) setLoading(true)
       try {
         const data = await fetchArtists()
-        if (!cancelled) { setArtists(data); setLoading(false) }
+        if (!cancelled && data?.length) {
+          setArtists(data)
+          if (isFirst) { setLoading(false); isFirst = false }
+        } else if (!cancelled && isFirst) {
+          setLoading(false); isFirst = false
+        }
       } catch(e) {
-        if (!cancelled) setLoading(false)
+        if (!cancelled && isFirst) { setLoading(false); isFirst = false }
       }
     }
     load()
